@@ -69,21 +69,16 @@ Exposure modes - Preset Save / Recall - Camera status queries
     -   Testing
     -   Unsupported commands
 
-### Clean Dark Interface
+### Future features underway 
 
--   Always-dark theme
--   Live feedback display
--   Real-time movement visualization
-
+-   performance and user interface optimisation
+-   stability works
+-   additional query functions
+-   additional in-app image and presets functions
+-   live video streaming within app
+-   position based control for smoother pan/tilt/zoom
+-   bug fixes
 ------------------------------------------------------------------------
-
-## Who This Is For
-
--   Church AV teams
--   Live stream operators
--   Video production crews
--   PTZ camera owners
--   Integrators and technicians
 
 If you use PTZOptics or other VISCA-compatible cameras, this tool gives
 you more control than basic control panels.
