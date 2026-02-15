@@ -1,0 +1,132 @@
+Category,CommandName,ActionOrMode,CommandHex,ReturnHex,Notes
+
+System,ACK,ACK,90 4y FF,,Accepted
+System,Completion,Completion,90 5y FF,,Executed
+System,Error,Syntax Error,90 60 02 FF,,Invalid format
+System,Error,Buffer Full,90 60 03 FF,,Sockets busy
+System,Error,Command Canceled,90 6y 04 FF,,
+System,Error,No Socket,90 6y 05 FF,,
+System,Error,Not Executable,90 6y 41 FF,,
+
+CAM_Power,Power,On,81 01 04 00 02 FF,,
+CAM_Power,Power,Off,81 01 04 00 03 FF,,
+
+CAM_Zoom,Zoom,Stop,81 01 04 07 00 FF,,
+CAM_Zoom,Zoom,Tele Std,81 01 04 07 02 FF,,
+CAM_Zoom,Zoom,Wide Std,81 01 04 07 03 FF,,
+CAM_Zoom,Zoom,Tele Var,81 01 04 07 2p FF,,p=0–7
+CAM_Zoom,Zoom,Wide Var,81 01 04 07 3p FF,,p=0–7
+CAM_Zoom,Zoom,Direct,81 01 04 47 p q r s FF,,pqrs position
+
+CAM_Focus,Focus,Stop,81 01 04 08 00 FF,,
+CAM_Focus,Focus,Far Std,81 01 04 08 02 FF,,
+CAM_Focus,Focus,Near Std,81 01 04 08 03 FF,,
+CAM_Focus,Focus,Far Var,81 01 04 08 2p FF,,p=0–7
+CAM_Focus,Focus,Near Var,81 01 04 08 3p FF,,p=0–7
+CAM_Focus,Focus,Direct,81 01 04 48 0p 0q 0r 0s FF,,
+CAM_Focus,Focus,Auto,81 01 04 38 02 FF,,
+CAM_Focus,Focus,Manual,81 01 04 38 03 FF,,
+CAM_Focus,Focus,Auto/Manual Toggle,81 01 04 38 10 FF,,
+CAM_Focus,Focus Lock,Lock,81 0A 04 68 02 FF,,
+CAM_Focus,Focus Lock,Unlock,81 0A 04 68 03 FF,,
+
+CAM_WB,WhiteBalance,Auto,81 01 04 35 00 FF,,
+CAM_WB,WhiteBalance,Indoor,81 01 04 35 01 FF,,
+CAM_WB,WhiteBalance,Outdoor,81 01 04 35 02 FF,,
+CAM_WB,WhiteBalance,OnePush,81 01 04 35 03 FF,,
+CAM_WB,WhiteBalance,Manual,81 01 04 35 05 FF,,
+CAM_WB,WhiteBalance,ColorTemp,81 01 04 35 20 FF,,
+CAM_WB,WhiteBalance,OnePush Trigger,81 01 04 10 05 FF,,
+
+CAM_RGain,RGain,Reset,81 01 04 03 00 FF,,
+CAM_RGain,RGain,Up,81 01 04 03 02 FF,,
+CAM_RGain,RGain,Down,81 01 04 03 03 FF,,
+CAM_RGain,RGain,Direct,81 01 04 43 00 00 0p 0q FF,,
+
+CAM_BGain,BGain,Reset,81 01 04 04 00 FF,,
+CAM_BGain,BGain,Up,81 01 04 04 02 FF,,
+CAM_BGain,BGain,Down,81 01 04 04 03 FF,,
+CAM_BGain,BGain,Direct,81 01 04 44 00 00 0p 0q FF,,
+
+CAM_ColorTemp,ColorTemp,Reset,81 01 04 20 00 FF,,
+CAM_ColorTemp,ColorTemp,Up,81 01 04 20 02 FF,,
+CAM_ColorTemp,ColorTemp,Down,81 01 04 20 03 FF,,
+CAM_ColorTemp,ColorTemp,Direct,81 01 04 20 0p 0q FF,,
+
+CAM_AE,Exposure,Full Auto,81 01 04 39 00 FF,,
+CAM_AE,Exposure,Manual,81 01 04 39 03 FF,,
+CAM_AE,Exposure,Shutter Priority,81 01 04 39 0A FF,,
+CAM_AE,Exposure,Iris Priority,81 01 04 39 0B FF,,
+CAM_AE,Exposure,Bright,81 01 04 39 0D FF,,
+
+CAM_Iris,Iris,Reset,81 01 04 0B 00 FF,,
+CAM_Iris,Iris,Up,81 01 04 0B 02 FF,,
+CAM_Iris,Iris,Down,81 01 04 0B 03 FF,,
+CAM_Iris,Iris,Direct,81 01 04 4B 00 00 0p 0q FF,,
+
+CAM_Shutter,Shutter,Reset,81 01 04 0A 00 FF,,
+CAM_Shutter,Shutter,Up,81 01 04 0A 02 FF,,
+CAM_Shutter,Shutter,Down,81 01 04 0A 03 FF,,
+CAM_Shutter,Shutter,Direct,81 01 04 4A 00 00 0p 0q FF,,
+
+CAM_Gain,Gain,Reset,81 01 04 0C 00 FF,,
+CAM_Gain,Gain,Up,81 01 04 0C 02 FF,,
+CAM_Gain,Gain,Down,81 01 04 0C 03 FF,,
+CAM_Gain,Gain,Direct,81 01 04 0C 00 00 0p 0q FF,,
+CAM_Gain,Gain,Limit,81 01 04 2C 0p FF,,
+
+CAM_Backlight,Backlight,On,81 01 04 33 02 FF,,
+CAM_Backlight,Backlight,Off,81 01 04 33 03 FF,,
+
+CAM_Flicker,Flicker,Mode,81 01 04 23 0p FF,,0/50/60Hz
+
+CAM_ApertureMode,Sharpness,Auto,81 01 04 05 02 FF,,
+CAM_ApertureMode,Sharpness,Manual,81 01 04 05 03 FF,,
+CAM_Aperture,Sharpness,Direct,81 01 04 42 00 00 0p 0q FF,,
+
+CAM_PictureEffect,PictureEffect,Off,81 01 04 63 00 FF,,
+CAM_PictureEffect,PictureEffect,B&W,81 01 04 63 04 FF,,
+
+CAM_Memory,Memory,Reset,81 01 04 3F 00 pp FF,,
+CAM_Memory,Memory,Set,81 01 04 3F 01 pp FF,,
+CAM_Memory,Memory,Recall,81 01 04 3F 02 pp FF,,
+
+PanTilt,Drive,Up,81 01 06 01 VV WW 03 01 FF,,
+PanTilt,Drive,Down,81 01 06 01 VV WW 03 02 FF,,
+PanTilt,Drive,Left,81 01 06 01 VV WW 01 03 FF,,
+PanTilt,Drive,Right,81 01 06 01 VV WW 02 03 FF,,
+PanTilt,Drive,Stop,81 01 06 01 VV WW 03 03 FF,,
+PanTilt,Drive,Home,81 01 06 04 FF,,
+PanTilt,Drive,Reset,81 01 06 05 FF,,
+
+CAM_OSD,OSD,Open/Close,81 01 04 3F 02 5F FF,,
+CAM_OSD,OSD,Enter,81 01 06 06 05 FF,,
+CAM_OSD,OSD,Return,81 01 06 06 04 FF,,
+
+CAM_AFCalibration,Focus,Recalibrate,81 0A 01 03 10 FF,,
+CAM_TallyLight,Tally,Control,81 0A 02 02 0p FF,,
+CAM_NDIMode,NDI,High,81 0B 01 01 FF,,
+CAM_NDIMode,NDI,Medium,81 0B 01 02 FF,,
+CAM_NDIMode,NDI,Low,81 0B 01 03 FF,,
+CAM_NDIMode,NDI,Off,81 0B 01 04 FF,,
+CAM_MulticastMode,Network,Multicast,81 0B 01 23 0p FF,,
+CAM_PTZMotionSync,PTZ Sync,On,81 0A 11 13 02 FF,,
+CAM_PTZMotionSync,PTZ Sync,Off,81 0A 11 13 03 FF,,
+CAM_UACStatus,USB Audio,Toggle,81 2A 02 A0 04 0p FF,,
+
+Inquiry,CAM_ZoomPosInq,,81 09 04 47 FF,90 50 0p 0q 0r 0s FF,
+Inquiry,CAM_FocusPosInq,,81 09 04 48 FF,90 50 0p 0q 0r 0s FF,
+Inquiry,CAM_WBModeInq,,81 09 04 35 FF,90 50 xx FF,
+Inquiry,CAM_RGainInq,,81 09 04 43 FF,90 50 00 00 0p 0q FF,
+Inquiry,CAM_BGainInq,,81 09 04 44 FF,90 50 00 00 0p 0q FF,
+Inquiry,CAM_ColorTempInq,,81 09 04 20 FF,90 50 pq FF,
+Inquiry,CAM_AEModeInq,,81 09 04 39 FF,90 50 xx FF,
+Inquiry,CAM_IrisPosInq,,81 09 04 4B FF,90 50 0p 0q FF,
+Inquiry,CAM_ShutterPosInq,,81 09 04 4A FF,90 50 0p 0q FF,
+Inquiry,CAM_BrightPosInq,,81 09 04 4D FF,90 50 0p 0q FF,
+Inquiry,CAM_BacklightModeInq,,81 09 04 33 FF,90 50 xx FF,
+Inquiry,CAM_PanTiltPosInq,,81 09 06 12 FF,90 50 0w…0z FF,
+Inquiry,CAM_FlipInq,,81 09 04 A4 FF,90 50 xx FF,
+Inquiry,CAM_ColorHueInq,,81 09 04 4F FF,90 50 00 00 00 0p FF,
+Inquiry,CAM_UACInq,,81 2A 02 A0 04 FF,90 50 xx FF
+
