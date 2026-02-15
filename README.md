@@ -7,6 +7,9 @@ virtual controls, and custom command mapping. It is designed for camera
 operators, live production teams, and AV users who want smoother motion,
 fine control, and easy access to advanced VISCA commands. Written with the help of chatgpt 5.2.
 
+Download latest release from here:
+https://github.com/sek0002/PTZoptics_JS/releases/
+
 ------------------------------------------------------------------------
 
 ## What This App Does
