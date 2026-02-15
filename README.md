@@ -1,10 +1,11 @@
-# PTZoptics_JS
+# PTZoptics_JS <img align="right" width="150" height="150" alt="UVCC" src="https://github.com/user-attachments/assets/8957cf51-e8a5-4ed3-80c0-2d139271ee60" />
+
 
 **PTZoptics_JS** is a desktop application for controlling
 VISCA-compatible PTZ cameras with precision using a game controller,
 virtual controls, and custom command mapping. It is designed for camera
 operators, live production teams, and AV users who want smoother motion,
-fine control, and easy access to advanced VISCA commands.
+fine control, and easy access to advanced VISCA commands. Written with the help of chatgpt 5.2.
 
 ------------------------------------------------------------------------
 
@@ -12,12 +13,12 @@ fine control, and easy access to advanced VISCA commands.
 
 PTZoptics_JS lets you control your PTZ camera in multiple ways:
 
--   Use a game controller for smooth pan/tilt/zoom movement\
--   Fine-tune joystick sensitivity with a visual response curve editor\
+-   Use a game controller for smooth pan/tilt/zoom movement
+-   Fine-tune joystick sensitivity with a visual response curve editor
 -   Send VISCA commands directly (presets, power, focus, exposure,
-    etc.)\
+    etc.)
 -   Use an on-screen virtual controller if no hardware controller is
-    available\
+    available
 -   Create custom mappings for buttons and axes
 
 This makes it ideal for live streaming, churches, studios, classrooms,
@@ -78,10 +79,10 @@ Exposure modes - Preset Save / Recall - Camera status queries
 
 ## Who This Is For
 
--   Church AV teams\
--   Live stream operators\
--   Video production crews\
--   PTZ camera owners\
+-   Church AV teams
+-   Live stream operators
+-   Video production crews
+-   PTZ camera owners
 -   Integrators and technicians
 
 If you use PTZOptics or other VISCA-compatible cameras, this tool gives
