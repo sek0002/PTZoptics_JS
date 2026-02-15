@@ -1,4 +1,4 @@
-# PTZoptics_JS <img align="right" width="150" height="150" alt="UVCC" src="https://github.com/user-attachments/assets/8957cf51-e8a5-4ed3-80c0-2d139271ee60" />
+# PTZoptics_JS <img align="right" width="120" height="120" alt="ico" src="assets/app.ico" />
 
 
 **PTZoptics_JS** is a desktop application for controlling
