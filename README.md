@@ -1,7 +1,7 @@
 # PTZoptics_JS <img align="right" width="120" height="120" alt="ico" src="assets/app.ico" />
 
-<img align="left" width="412.5" height="337.5" alt="image" src="https://github.com/user-attachments/assets/d9b2dff9-c12e-4029-943f-d4cb852d1583" />
-<img align="right" width="412.5" height="337.5" alt="image" src="https://github.com/user-attachments/assets/d3cae73f-41c4-4991-bf50-9ae37e6d8eaf" />
+<img align="left" width="412.5" height="337.5" alt="image" src="https://github.com/user-attachments/assets/d9b2dff9-c12e-4029-943f-d4cb852d1583" /> <img align="right" width="412.5" height="337.5" alt="image" src="https://github.com/user-attachments/assets/d3cae73f-41c4-4991-bf50-9ae37e6d8eaf" />
+
 
 
 **PTZoptics_JS** is a desktop application for controlling
