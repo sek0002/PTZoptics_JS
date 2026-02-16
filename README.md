@@ -1,10 +1,5 @@
 # PTZoptics_JS <img align="right" width="120" height="120" alt="ico" src="assets/app.ico" />
 
-<div class="image-row">
-    <img width="412.5" height="337.5" alt="image" src="https://github.com/user-attachments/assets/d9b2dff9-c12e-4029-943f-d4cb852d1583">
-    <img width="412.5" height="337.5" alt="image" src="https://github.com/user-attachments/assets/d3cae73f-41c4-4991-bf50-9ae37e6d8eaf">
-</div>
-
 **PTZoptics_JS** is a desktop application for controlling
 VISCA-compatible PTZ cameras with precision using a game controller,
 virtual controls, and custom command mapping. It is designed for camera
@@ -15,6 +10,10 @@ Download latest release from here:
 https://github.com/sek0002/PTZoptics_JS/releases/
 
 ------------------------------------------------------------------------
+<div class="image-row">
+    <img width="412.5" height="337.5" alt="image" src="https://github.com/user-attachments/assets/d9b2dff9-c12e-4029-943f-d4cb852d1583">
+    <img width="412.5" height="337.5" alt="image" src="https://github.com/user-attachments/assets/d3cae73f-41c4-4991-bf50-9ae37e6d8eaf">
+</div>
 
 ## What This App Does
 
