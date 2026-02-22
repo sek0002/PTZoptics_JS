@@ -71,6 +71,37 @@ class Camera:
         else:
             raise NoQueryResponse(f'Could not get a response after {self.num_retries} tries')
 
+    def _send_visca_frame(self, frame_hex: str) -> Optional[bytes]:
+        """Send a fully framed VISCA payload (e.g. '81 09 04 47 FF') without re-wrapping it."""
+        payload_bytes = bytearray.fromhex(frame_hex)
+        if len(payload_bytes) < 3 or payload_bytes[0] != 0x81 or payload_bytes[-1] != 0xFF:
+            raise ValueError("VISCA frame must be a full payload starting with 0x81 and ending with 0xFF")
+
+        query = bool(len(payload_bytes) >= 2 and payload_bytes[1] == 0x09)
+        payload_type = b'\x01\x00'
+        payload_length = len(payload_bytes).to_bytes(2, 'big')
+
+        exception = None
+        for retry_num in range(self.num_retries):
+            self._increment_sequence_number()
+            sequence_bytes = self.sequence_number.to_bytes(4, 'big')
+            message = payload_type + payload_length + sequence_bytes + payload_bytes
+
+            self._sock.sendto(message, self._location)
+
+            try:
+                response = self._receive_response()
+            except ViscaException as exc:
+                exception = exc
+            else:
+                if response is not None:
+                    return response[1:-1]
+                elif not query:
+                    return None
+        if exception:
+            raise exception
+        raise NoQueryResponse(f'Could not get a response after {self.num_retries} tries')
+
     def _receive_response(self) -> Optional[bytes]:
         """Attempts to receive the response of the most recent command.
         Sometimes we don't get the response because this is UDP.

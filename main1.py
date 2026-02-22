@@ -63,6 +63,7 @@ from PySide6.QtWidgets import (
     QGraphicsSimpleTextItem,
     QMessageBox,
     QInputDialog,
+    QStyle,
 )
 # QtMultimedia (optional; backend-dependent RTMP support)
 try:
@@ -150,6 +151,18 @@ def sanitize_hex_payload(s: str) -> str:
 
     pairs = [hexchars[i : i + 2] for i in range(0, len(hexchars), 2)]
     return " ".join(pairs)
+
+
+def parse_visca_full_frame_hex(s: str) -> tuple[str, bool] | None:
+    """Return (normalized_frame_hex, is_query) if s looks like a full VISCA frame (81 .. FF)."""
+    norm = sanitize_hex_payload(s)
+    parts = [p for p in norm.split() if p]
+    if len(parts) < 3:
+        return None
+    if parts[0] != "81" or parts[-1] != "ff":
+        return None
+    is_query = (parts[1] == "09")
+    return norm.upper(), bool(is_query)
 
 
 def apply_always_dark_theme(app: QApplication) -> None:
@@ -628,11 +641,11 @@ class ResponseCurveEditor(QWidget):
         self.zero_chk.setFont(label_font)
 
         top = QHBoxLayout()
-        top.addWidget(QLabel("Control:"))
-        top.addWidget(self.control_combo)
-        top.addSpacing(10)
         top.addWidget(QLabel("Axis:"))
         top.addWidget(self.axis_combo)
+        top.addSpacing(10)
+        top.addWidget(QLabel("Control:"))
+        top.addWidget(self.control_combo)
         top.addStretch(1)
         top.addWidget(self.zero_chk)
         top.addWidget(self.invert_chk)
@@ -960,6 +973,9 @@ class ResponseCurveEditor(QWidget):
             self._redraw()
 
     def _on_axis_changed(self, idx: int):
+        if getattr(self, "_syncing_selectors", False):
+            return
+
         data = self.axis_combo.currentData()
         if data is None:
             return
@@ -988,11 +1004,9 @@ class ResponseCurveEditor(QWidget):
             self.speed_max_spin.setMaximum(8)
         else:
             self.speed_max_spin.setMaximum(7)
-        # Ensure speed max/min defaults follow the currently assigned control
+        # Preserve this axis' stored speed settings; just sync/clamp UI for the selected control.
         try:
-            self._apply_control_defaults_for_bins(ctrl)
             self._sync_bins_widgets_from_params()
-            self._on_bins_changed()
         except Exception:
             pass
         self.view.params = self.axis_params[self.selected_axis]
@@ -1319,6 +1333,13 @@ class ResponseCurveEditor(QWidget):
             params_list = []
             axis_count = 1
 
+        # Do not let a saved profile shrink the current live controller axis list.
+        # Profiles may have been created with no controller connected (axis_count=1).
+        try:
+            axis_count = max(int(axis_count), int(len(getattr(self, "axis_params", []) or [])))
+        except Exception:
+            pass
+
         # Ensure we have enough axes
         try:
             self.set_axis_count(max(1, axis_count))
@@ -1399,22 +1420,21 @@ class ResponseCurveEditor(QWidget):
             self.selected_axis = sel
             self.selected_control = self.axis_control_map.get(self.selected_axis, None)
             # Update control selector to match map
-            idx = self.control_combo.findData(self.selected_control)
-            if idx >= 0:
-                self.control_combo.setCurrentIndex(idx)
-            else:
-                self.control_combo.setCurrentIndex(0)
+            self.control_combo.blockSignals(True)
+            try:
+                idx = self.control_combo.findData(self.selected_control)
+                if idx >= 0:
+                    self.control_combo.setCurrentIndex(idx)
+                else:
+                    self.control_combo.setCurrentIndex(0)
+            finally:
+                self.control_combo.blockSignals(False)
             # Sync checkboxes + bins UI from params
             try:
                 p = self.axis_params[self.selected_axis]
                 self.invert_chk.setChecked(bool(getattr(p, "invert", False)))
                 self.zero_chk.setChecked(bool(getattr(p, "zero_based", False)))
-                if hasattr(self, "quantize_chk"):
-                    self.quantize_chk.setChecked(bool(getattr(p, "quantize_bins", False)))
-                if hasattr(self, "speed_min_spin"):
-                    self.speed_min_spin.setValue(int(getattr(p, "speed_min", 0)))
-                if hasattr(self, "speed_max_spin"):
-                    self.speed_max_spin.setValue(int(getattr(p, "speed_max", 7)))
+                self._sync_bins_widgets_from_params()
             except Exception:
                 pass
             self._redraw()
@@ -1728,7 +1748,7 @@ class VirtualControllerWidget(QWidget):
 class HexCommandsListWidget(QWidget):
     """
     Editable list of hex commands.
-    - Two columns: Label + Hex payload (editable)
+    - Columns: Label + Hex payload + Full hex frame (optional)
     - Send selected row via MainWindow.send_payload
     """
     def __init__(self, mono: QFont, label_font: QFont, send_payload_cb, register_cmd_cb=None, parent=None):
@@ -1767,8 +1787,8 @@ class HexCommandsListWidget(QWidget):
         self._pdf_link.linkActivated.connect(self._open_visca_pdf)
         root.addWidget(self._pdf_link)
 
-        self.table = QTableWidget(0, 2)
-        self.table.setHorizontalHeaderLabels(["Label", "Hex payload"])
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["Label", "Hex payload", "Full hex frame (optional)"])
         self.table.setFont(mono)
         self.table.setStyleSheet(
             "QTableWidget { background: rgb(14,16,19); color: rgb(235,235,235); gridline-color: rgb(45,48,55); }"
@@ -1778,8 +1798,13 @@ class HexCommandsListWidget(QWidget):
         self.table.setSelectionBehavior(self.table.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(self.table.SelectionMode.SingleSelection)
         self.table.setEditTriggers(self.table.EditTrigger.DoubleClicked | self.table.EditTrigger.EditKeyPressed)
+        self.table.setHorizontalScrollMode(self.table.ScrollMode.ScrollPerPixel)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.table.setTextElideMode(Qt.ElideNone)
         self.table.setColumnWidth(0, 220)
-        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setColumnWidth(1, 360)
+        self.table.setColumnWidth(2, 520)
+        self.table.horizontalHeader().setStretchLastSection(False)
 
         root.addWidget(self.table, stretch=1)
 
@@ -1828,19 +1853,81 @@ class HexCommandsListWidget(QWidget):
         for (label, payload, _is_query) in VISCA_COMMANDS:
             self._append_row(label, payload)
 
-    def _append_row(self, label: str, payload: str):
+    def _resolve_row_command(self, r: int) -> tuple[str, str, bool] | None:
+        label_item = self.table.item(r, 0)
+        payload_item = self.table.item(r, 1)
+        full_item = self.table.item(r, 2)
+        if label_item is None:
+            return None
+
+        label = (label_item.text() or "").strip()
+        payload_raw = (payload_item.text() if payload_item is not None else "") or ""
+        full_raw = (full_item.text() if full_item is not None else "") or ""
+        payload_raw = payload_raw.strip()
+        full_raw = full_raw.strip()
+
+        if not label:
+            return None
+
+        # Full frame takes precedence when provided.
+        if full_raw:
+            try:
+                full_norm, is_query = parse_visca_full_frame_hex(full_raw) or (None, None)
+            except Exception:
+                full_norm, is_query = (None, None)
+            if full_norm:
+                return label, str(full_norm), bool(is_query)
+            # If the optional full-frame column is incomplete/invalid while editing,
+            # fall back to the payload column (if present).
+
+        if not payload_raw:
+            return None
+        try:
+            payload = sanitize_hex_payload(payload_raw)
+        except Exception:
+            return None
+        return label, payload, False
+
+    def _append_row(self, label: str, payload: str, full_hex: str = ""):
         r = self.table.rowCount()
         self.table.insertRow(r)
         it_label = QTableWidgetItem(label)
         it_hex = QTableWidgetItem(payload)
+        it_full = QTableWidgetItem(full_hex)
+        it_label.setToolTip(label)
+        it_hex.setToolTip(payload)
+        it_full.setToolTip(full_hex)
         it_label.setFlags(it_label.flags() | Qt.ItemIsEditable)
         it_hex.setFlags(it_hex.flags() | Qt.ItemIsEditable)
+        it_full.setFlags(it_full.flags() | Qt.ItemIsEditable)
         self.table.setItem(r, 0, it_label)
         self.table.setItem(r, 1, it_hex)
+        self.table.setItem(r, 2, it_full)
 
     def _on_item_changed(self, _item):
         if getattr(self, "_suppress_register", False):
             return
+        try:
+            # If the optional full-frame column is used, clear the payload column for this row.
+            if int(getattr(_item, "column", lambda: -1)()) == 2:
+                txt = (_item.text() or "").strip()
+                if txt:
+                    r0 = int(getattr(_item, "row", lambda: -1)())
+                    if r0 >= 0:
+                        payload_item = self.table.item(r0, 1)
+                        if payload_item is not None and (payload_item.text() or "").strip():
+                            self.table.blockSignals(True)
+                            try:
+                                payload_item.setText("")
+                                payload_item.setToolTip("")
+                            finally:
+                                self.table.blockSignals(False)
+        except Exception:
+            pass
+        try:
+            _item.setToolTip((_item.text() or "").strip())
+        except Exception:
+            pass
         if not callable(getattr(self, "_register_cmd", None)):
             return
 
@@ -1853,24 +1940,13 @@ class HexCommandsListWidget(QWidget):
 
         if r < 0:
             return
-        label_item = self.table.item(r, 0)
-        hex_item = self.table.item(r, 1)
-        if label_item is None or hex_item is None:
+        resolved = self._resolve_row_command(r)
+        if resolved is None:
             return
-
-        label = (label_item.text() or "").strip()
-        payload_raw = (hex_item.text() or "").strip()
-        if not label or not payload_raw:
-            return
+        label, payload, is_query = resolved
 
         try:
-            payload = sanitize_hex_payload(payload_raw)
-        except Exception:
-            return
-
-        # Register as non-query
-        try:
-            self._register_cmd(label, payload, False)
+            self._register_cmd(label, payload, bool(is_query))
         except Exception:
             pass
 
@@ -1889,29 +1965,18 @@ class HexCommandsListWidget(QWidget):
         r = self.table.currentRow()
         if r < 0:
             return
-        label_item = self.table.item(r, 0)
-        hex_item = self.table.item(r, 1)
-        if label_item is None or hex_item is None:
+        resolved = self._resolve_row_command(r)
+        if resolved is None:
             return
+        label, payload, is_query = resolved
+        label = label or "Hex"
 
-        label = (label_item.text() or "").strip() or "Hex"
-        payload_raw = (hex_item.text() or "").strip()
-        if not payload_raw:
-            return
-
-        try:
-            payload = sanitize_hex_payload(payload_raw)
-        except Exception:
-            # Keep it silent; user can correct the hex
-            return
-
-        # Register into mappable functions (virtual pad) and treat as normal (non-query) command.
         if callable(getattr(self, "_register_cmd", None)):
             try:
-                self._register_cmd(label, payload, False)
+                self._register_cmd(label, payload, bool(is_query))
             except Exception:
                 pass
-        self._send_payload(payload, False, f"[Hex list {label}]")
+        self._send_payload(payload, bool(is_query), f"[Hex list {label}]")
 
 # -----------------------------
 # Main window
@@ -1922,7 +1987,7 @@ class HexCommandsListWidget(QWidget):
     # Persistence helpers (profiles)
     # -----------------------------
     def get_rows_state(self) -> list[dict[str, str]]:
-        """Return list of {label,payload} for the table (JSON-serializable)."""
+        """Return list of {label,payload,full_hex} for the table (JSON-serializable)."""
         rows: list[dict[str, str]] = []
         try:
             rc = int(self.table.rowCount())
@@ -1931,11 +1996,14 @@ class HexCommandsListWidget(QWidget):
         for r in range(rc):
             it_label = self.table.item(r, 0)
             it_hex = self.table.item(r, 1)
+            it_full = self.table.item(r, 2)
             label = (it_label.text() if it_label is not None else "") or ""
             payload_raw = (it_hex.text() if it_hex is not None else "") or ""
+            full_raw = (it_full.text() if it_full is not None else "") or ""
             label = label.strip()
             payload_raw = payload_raw.strip()
-            if not label and not payload_raw:
+            full_raw = full_raw.strip()
+            if not label and not payload_raw and not full_raw:
                 continue
             # store a sanitized payload if possible, otherwise store raw text
             payload = payload_raw
@@ -1944,7 +2012,17 @@ class HexCommandsListWidget(QWidget):
                     payload = sanitize_hex_payload(payload_raw)
             except Exception:
                 payload = payload_raw
-            rows.append({"label": label, "payload": payload})
+            full_hex = full_raw
+            try:
+                if full_raw:
+                    parsed = parse_visca_full_frame_hex(full_raw)
+                    if parsed is not None:
+                        full_hex = parsed[0]
+                    else:
+                        full_hex = sanitize_hex_payload(full_raw)
+            except Exception:
+                full_hex = full_raw
+            rows.append({"label": label, "payload": payload, "full_hex": full_hex})
         return rows
 
     def apply_rows_state(self, rows: list[dict[str, str]] | None) -> None:
@@ -1959,11 +2037,12 @@ class HexCommandsListWidget(QWidget):
                 try:
                     label = str(row.get("label", "")).strip()
                     payload = str(row.get("payload", "")).strip()
+                    full_hex = str(row.get("full_hex", "")).strip()
                 except Exception:
                     continue
-                if not label and not payload:
+                if not label and not payload and not full_hex:
                     continue
-                self._append_row(label or "Hex", payload)
+                self._append_row(label or "Hex", payload, full_hex)
         finally:
             try:
                 self._suppress_register = False
@@ -1976,7 +2055,19 @@ class HexCommandsListWidget(QWidget):
             try:
                 for row in self.get_rows_state():
                     try:
-                        self._register_cmd(row["label"], sanitize_hex_payload(row["payload"]), False)
+                        label = str(row.get("label", "")).strip()
+                        full_hex = str(row.get("full_hex", "")).strip()
+                        payload = str(row.get("payload", "")).strip()
+                        if full_hex:
+                            parsed = parse_visca_full_frame_hex(full_hex)
+                            if parsed is not None:
+                                cmd_hex, is_query = parsed
+                            else:
+                                cmd_hex, is_query = sanitize_hex_payload(full_hex), False
+                        else:
+                            cmd_hex, is_query = sanitize_hex_payload(payload), False
+                        if label and cmd_hex:
+                            self._register_cmd(label, cmd_hex, bool(is_query))
                     except Exception:
                         pass
             except Exception:
@@ -2675,10 +2766,18 @@ class MainWindow(QMainWindow):
 
             # Small red bin button (delete)
             bin_btn = QToolButton()
-            bin_btn.setText("🗑")
+            bin_btn.setText("")
             bin_btn.setFont(mono)
             bin_btn.setToolTip("Delete target")
             bin_btn.setFixedSize(30, 30)
+            try:
+                icon = self.style().standardIcon(QStyle.SP_TrashIcon)
+                if icon is not None and not icon.isNull():
+                    bin_btn.setIcon(icon)
+                else:
+                    bin_btn.setText("X")
+            except Exception:
+                bin_btn.setText("X")
             bin_btn.setStyleSheet(
                 "QToolButton {"
                 "  color: rgb(235,235,235);"
@@ -3433,8 +3532,8 @@ class MainWindow(QMainWindow):
         cb.clear()
         cb.addItem("Unassigned", None)
 
-        # VISCA commands
-        for label, payload, is_query in VISCA_COMMANDS:
+        # Built-in + user commands (Hex list commands are registered into self.user_commands)
+        for label, payload, is_query in self.get_all_commands():
             cb.addItem(label, ("visca", payload, bool(is_query), label))
 
         # Target switches (only show saved / activated targets)
@@ -3475,34 +3574,86 @@ class MainWindow(QMainWindow):
             self.refresh_controllers_btn.setEnabled(True)
             return
 
+        # Startup should be tolerant when no controller is connected (or SDL joystick backend
+        # is not ready yet). Prefer a usable "no controllers" state over a hard init failure.
         try:
             pygame.init()
+        except Exception:
+            pass
+        try:
             pygame.joystick.init()
-            self._controller_ok = True
-            self._last_joystick_count = -1
-            self.controller_status.setText("Controller backend: pygame OK")
-            self.refresh_controllers_btn.setEnabled(True)
+        except Exception:
+            pass
+
+        self._controller_ok = True
+        self._last_joystick_count = -1
+        self.controller_status.setText("Controller backend: pygame OK")
+        self.refresh_controllers_btn.setEnabled(True)
+
+        try:
             self.refresh_controllers()
-        except Exception as e:
+        except Exception:
+            # Final guard: never leave startup stuck in a hard-error state.
             self._controller_ok = False
-            self.controller_status.setText(f"Controller backend: ERROR ({type(e).__name__}) {e}")
             self.controller_combo.clear()
-            self.controller_combo.addItem("(controller init failed)")
+            self.controller_combo.addItem("(no controllers detected)")
             self.controller_combo.setEnabled(False)
-            self.refresh_controllers_btn.setEnabled(True)
+            self.controller_status.setText("Controllers detected: 0")
 
     def refresh_controllers(self, preserve_selection: bool = True):
-        if pygame is None or not self._controller_ok:
+        if pygame is None:
             return
+        if not self._controller_ok:
+            # Allow manual refresh to recover from a startup init failure (e.g., controller plugged in later).
+            try:
+                pygame.init()
+                pygame.joystick.init()
+                self._controller_ok = True
+                self.controller_status.setText("Controller backend: pygame OK")
+            except Exception as e:
+                self._controller_ok = False
+                self.controller_status.setText(f"Controller backend: ERROR ({type(e).__name__}) {e}")
+                try:
+                    self.controller_combo.blockSignals(True)
+                    self.controller_combo.clear()
+                    self.controller_combo.addItem("(controller init failed)")
+                    self.controller_combo.setEnabled(False)
+                finally:
+                    try:
+                        self.controller_combo.blockSignals(False)
+                    except Exception:
+                        pass
+                return
         # Snapshot current selection (joystick id) so we can preserve it across refreshes.
         prev_jid = self.controller_combo.currentData() if preserve_selection else None
 
         try:
-            pygame.event.pump()
+            try:
+                pygame.event.pump()
+            except Exception:
+                # Some environments can enumerate joysticks even if event pump is unavailable.
+                pass
             count = pygame.joystick.get_count()
         except Exception as e:
-            self.controller_status.setText(f"Controller backend: ERROR ({type(e).__name__}) {e}")
-            return
+            # Retry joystick subsystem init once; if it still fails, degrade gracefully to
+            # "no controllers" instead of a hard error on startup.
+            try:
+                pygame.joystick.init()
+                count = int(pygame.joystick.get_count())
+                self._controller_ok = True
+            except Exception:
+                self._controller_ok = False
+                self._last_joystick_count = 0
+                self.controller_combo.blockSignals(True)
+                try:
+                    self.controller_combo.clear()
+                    self.controller_combo.addItem("(no controllers detected)", None)
+                    self.controller_combo.setEnabled(False)
+                finally:
+                    self.controller_combo.blockSignals(False)
+                self.controller_status.setText("Controllers detected: 0")
+                self._set_mapping_choices([], [])
+                return
         # Track device count for hot-plug detection
         self._last_joystick_count = int(count)
 
@@ -3585,10 +3736,14 @@ class MainWindow(QMainWindow):
 
             js = pygame.joystick.Joystick(int(jid))
             js.init()
+            try:
+                pygame.event.pump()
+            except Exception:
+                pass
 
             self._active_joystick_id = int(jid)
             self._active_joystick = js
-            self._axis_count = js.get_numaxes()
+            self._axis_count = int(js.get_numaxes())
             self._button_count = js.get_numbuttons()
             self._hat_count = js.get_numhats()
 
@@ -3887,8 +4042,28 @@ class MainWindow(QMainWindow):
             pass
 
     def _poll_controller_for_curve(self):
-        if pygame is None or not self._controller_ok:
+        if pygame is None:
             return
+        # Throttled background probe so controller status/list updates automatically
+        # when a device is plugged in after startup.
+        try:
+            _now = float(_time.time())
+        except Exception:
+            _now = 0.0
+        try:
+            _next_probe = float(getattr(self, "_next_controller_auto_probe_t", 0.0) or 0.0)
+        except Exception:
+            _next_probe = 0.0
+
+        if (not self._controller_ok) or (self._active_joystick is None):
+            if _now >= _next_probe:
+                try:
+                    self._next_controller_auto_probe_t = _now + 1.0
+                    self.refresh_controllers(preserve_selection=True)
+                except Exception:
+                    pass
+            if not self._controller_ok:
+                return
 
         # --- hot-plug detection (device added/removed)
         try:
@@ -3929,9 +4104,19 @@ class MainWindow(QMainWindow):
         try:
             pygame.event.pump()
             js = self._active_joystick
+            try:
+                n_axes_live = int(js.get_numaxes())
+            except Exception:
+                n_axes_live = int(getattr(self, "_axis_count", 0) or 0)
+
+            # Some controllers/backends report capabilities only after the first event pump.
+            # If the live axis count differs, refresh the curve editor axis list immediately.
+            if n_axes_live != int(getattr(self, "_axis_count", 0) or 0):
+                self._axis_count = int(n_axes_live)
+                self._sync_curve_axis_combo()
 
             # --- live curve point (selected axis)
-            n = js.get_numaxes()
+            n = n_axes_live
             ax = int(self.curve_editor.get_active_axis()) if hasattr(self.curve_editor, 'get_active_axis') else int(self.curve_editor.selected_axis)
             raw = float(js.get_axis(ax)) if ax < n else 0.0
             self.curve_editor.set_controller_value(raw)
@@ -4104,11 +4289,27 @@ class MainWindow(QMainWindow):
     # -----------------------------
     def get_all_commands(self):
         """Return combined preset + user commands as (label, payload, is_query)."""
-        cmds = list(VISCA_COMMANDS)
-        # Keep insertion order; user commands overwrite by label if duplicates exist.
+        # De-duplicate by label while preserving order:
+        # built-ins first, then user commands override same-label entries in place.
+        out: list[tuple[str, str, bool]] = []
+        by_label: dict[str, int] = {}
+
+        for lbl, payload, is_query in VISCA_COMMANDS:
+            key = str(lbl)
+            by_label[key] = len(out)
+            out.append((key, str(payload), bool(is_query)))
+
         for lbl, (payload, is_query) in (self.user_commands or {}).items():
-            cmds.append((str(lbl), str(payload), bool(is_query)))
-        return cmds
+            key = str(lbl)
+            item = (key, str(payload), bool(is_query))
+            idx = by_label.get(key)
+            if idx is None:
+                by_label[key] = len(out)
+                out.append(item)
+            else:
+                out[idx] = item
+
+        return out
 
     def register_user_command(self, label: str, payload: str, is_query: bool = False):
         """Register/update a user command and refresh mapping dropdowns."""
@@ -4124,6 +4325,11 @@ class MainWindow(QMainWindow):
                 self.virtual_controller.refresh_command_lists()
         except Exception:
             pass
+        # Refresh physical button mapping dropdowns too.
+        try:
+            self._refresh_target_actions_in_mapping_combos()
+        except Exception:
+            pass
 
     # -----------------------------
     # Sending logic
@@ -4137,6 +4343,22 @@ class MainWindow(QMainWindow):
 
         try:
             cam = self.get_camera(ip, port)
+            payload_display = str(payload).strip()
+            payload_for_send = payload_display
+            decode_payload = payload_display
+            effective_is_query = bool(is_query)
+
+            full_frame_parts: list[str] | None = None
+            try:
+                parsed_full = parse_visca_full_frame_hex(payload_display)
+            except Exception:
+                parsed_full = None
+            if parsed_full is not None:
+                payload_for_send, inferred_query = parsed_full
+                effective_is_query = bool(inferred_query)
+                full_frame_parts = [p for p in payload_for_send.split() if p]
+                if len(full_frame_parts) >= 4:
+                    decode_payload = " ".join(full_frame_parts[2:-1]).upper()
 
             key = (ip, port)
             now = _time.time()
@@ -4148,9 +4370,14 @@ class MainWindow(QMainWindow):
                 "04 07 00",           # Zoom Stop
                 "04 08 00",           # Focus Stop
             }
-            normalized = payload.strip().upper()
+            stop_full_frames = {
+                "81 01 06 01 00 00 03 03 FF",
+                "81 01 04 07 00 FF",
+                "81 01 04 08 00 FF",
+            }
+            normalized = payload_for_send.strip().upper()
 
-            if (not _force) and (not is_query) and (normalized not in stop_payloads) and self._send_rate_limit_sec > 0:
+            if (not _force) and (not effective_is_query) and (normalized not in stop_payloads) and (normalized not in stop_full_frames) and self._send_rate_limit_sec > 0:
                 last_any = self._last_any_send_t.get(key)
                 if last_any is not None:
                     elapsed = now - last_any
@@ -4167,7 +4394,7 @@ class MainWindow(QMainWindow):
                                 pass
 
                         # Coalesce: remember the latest command and schedule a single send at the next slot.
-                        self._rate_pending[key] = (label, payload, is_query)
+                        self._rate_pending[key] = (label, payload_for_send, effective_is_query)
                         remaining = max(0.0, self._send_rate_limit_sec - elapsed)
 
                         t = self._rate_timers.get(key)
@@ -4200,7 +4427,7 @@ class MainWindow(QMainWindow):
                         return
 
             # Passed (or bypassed) rate limiter: record send time (non-query only)
-            if not is_query:
+            if not effective_is_query:
                 self._last_any_send_t[key] = now
 
                 # Debounce repeated identical VISCA commands (drops rapid duplicates)
@@ -4211,20 +4438,23 @@ class MainWindow(QMainWindow):
                         return
                 self._last_send[key] = (normalized, now)
 
-            resp = cam._send_command(payload, query=is_query)
+            if full_frame_parts is not None:
+                resp = cam._send_visca_frame(payload_for_send)
+            else:
+                resp = cam._send_command(payload_for_send, query=effective_is_query)
 
-            if is_query:
+            if effective_is_query:
                 if resp is None:
-                    self.add_log(f"QUERY {label}: {payload} | response: <None>")
+                    self.add_log(f"QUERY {label}: {payload_for_send} | response: <None>")
                 else:
-                    self.add_log(f"QUERY {label}: {payload} | response: {resp.hex(' ')}")
+                    self.add_log(f"QUERY {label}: {payload_for_send} | response: {resp.hex(' ')}")
                     # Update status panel when we recognize inquiry payloads
                     try:
-                        self._handle_inquiry_response(payload, resp)
+                        self._handle_inquiry_response(decode_payload, resp)
                     except Exception:
                         pass
             else:
-                self.add_log(f"SENT {label}: {payload}")
+                self.add_log(f"SENT {label}: {payload_for_send}")
 
         except NoQueryResponse as e:
             self.add_log(f"ERROR: No query response: {e}")
