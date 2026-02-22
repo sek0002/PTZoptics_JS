@@ -2411,9 +2411,12 @@ class MainWindow(QMainWindow):
         self._controller_ok = False
         self._active_joystick_id: int | None = None
         self._active_joystick = None
+        self._active_controller_name: str | None = None
         self._axis_count = 0
         self._button_count = 0
         self._hat_count = 0
+        # Per-controller button/hat assignments cached by a stable controller signature.
+        self._button_mappings_by_controller: dict[str, object] = {}
 
         self.logbuf = LogBuffer(capacity=200)
 
@@ -3652,7 +3655,13 @@ class MainWindow(QMainWindow):
                 finally:
                     self.controller_combo.blockSignals(False)
                 self.controller_status.setText("Controllers detected: 0")
-                self._set_mapping_choices([], [])
+                self._snapshot_active_button_mapping()
+                self._active_joystick_id = None
+                self._active_joystick = None
+                self._active_controller_name = None
+                self._axis_count = self._button_count = self._hat_count = 0
+                self._rebuild_button_mapping_ui(0, 0, label_font=self._label_font, mono=self._mono_font)
+                self._sync_curve_axis_combo()
                 return
         # Track device count for hot-plug detection
         self._last_joystick_count = int(count)
@@ -3696,7 +3705,13 @@ class MainWindow(QMainWindow):
             self.on_controller_selected(target_idx)
         else:
             # Clear mapping UI when nothing is connected
-            self._set_mapping_choices([], [])
+            self._snapshot_active_button_mapping()
+            self._active_joystick_id = None
+            self._active_joystick = None
+            self._active_controller_name = None
+            self._axis_count = self._button_count = self._hat_count = 0
+            self._rebuild_button_mapping_ui(0, 0, label_font=self._label_font, mono=self._mono_font)
+            self._sync_curve_axis_combo()
 
 
     
@@ -3715,8 +3730,10 @@ class MainWindow(QMainWindow):
 
         jid = self.controller_combo.currentData()
         if jid is None:
+            self._snapshot_active_button_mapping()
             self._active_joystick_id = None
             self._active_joystick = None
+            self._active_controller_name = None
             self._axis_count = self._button_count = self._hat_count = 0
             self._rebuild_button_mapping_ui(0, 0, label_font=self._label_font, mono=self._mono_font)
             self._sync_curve_axis_combo()
@@ -3728,6 +3745,7 @@ class MainWindow(QMainWindow):
             return
 
         try:
+            self._snapshot_active_button_mapping()
             if self._active_joystick is not None:
                 try:
                     self._active_joystick.quit()
@@ -3743,6 +3761,10 @@ class MainWindow(QMainWindow):
 
             self._active_joystick_id = int(jid)
             self._active_joystick = js
+            try:
+                self._active_controller_name = str(js.get_name())
+            except Exception:
+                self._active_controller_name = f"Controller {int(jid)}"
             self._axis_count = int(js.get_numaxes())
             self._button_count = js.get_numbuttons()
             self._hat_count = js.get_numhats()
@@ -3760,6 +3782,7 @@ class MainWindow(QMainWindow):
                 pass
         except Exception as e:
             self.controller_status.setText(f"Controller select ERROR ({type(e).__name__}) {e}")
+            self._active_controller_name = None
             self._sync_curve_axis_combo()
             # Apply any pending profile controller mappings/curves now that mapping UI exists
             try:
@@ -3864,6 +3887,33 @@ class MainWindow(QMainWindow):
                 continue
             mapping[i] = data
         return mapping
+
+    def _controller_mapping_key(self) -> str | None:
+        """Stable key for current controller capabilities, used for per-controller profile mappings."""
+        try:
+            name = str(getattr(self, "_active_controller_name", None) or "").strip()
+        except Exception:
+            name = ""
+        if not name:
+            return None
+        try:
+            a = int(getattr(self, "_axis_count", 0) or 0)
+            b = int(getattr(self, "_button_count", 0) or 0)
+            h = int(getattr(self, "_hat_count", 0) or 0)
+        except Exception:
+            a = b = h = 0
+        return f"{name}|a{a}|b{b}|h{h}"
+
+    def _snapshot_active_button_mapping(self) -> None:
+        """Cache current button mapping under the active controller key (if any)."""
+        try:
+            key = self._controller_mapping_key()
+            if not key:
+                return
+            mapping = self.get_button_mapping()
+            self._button_mappings_by_controller[key] = self._jsonable(mapping)
+        except Exception:
+            pass
 
     # -----------------------------
     # Continuous PTZ from axes
@@ -3978,7 +4028,21 @@ class MainWindow(QMainWindow):
             p = params_list[ax_i]
             raw_curve = self._axis_phys_to_curve_raw(p, raw_phys)
             shaped, spd = p.shaped_with_bins(raw_curve)
-            intent[ctrl] = (float(shaped), int(spd))
+            shaped_f = float(shaped)
+            spd_i = int(spd)
+
+            prev = intent.get(ctrl)
+            if prev is None:
+                intent[ctrl] = (shaped_f, spd_i)
+            else:
+                prev_shaped, prev_spd = prev
+                # Allow multiple physical axes to map to the same logical control.
+                # Use the strongest active input so a resting duplicate axis doesn't overwrite
+                # another axis that is currently driving motion.
+                if (abs(shaped_f) > abs(float(prev_shaped))) or (
+                    abs(shaped_f) == abs(float(prev_shaped)) and abs(spd_i) > abs(int(prev_spd))
+                ):
+                    intent[ctrl] = (shaped_f, spd_i)
 
         # --- Pan
         pan_shaped, pan_spd = intent.get("Pan", (0.0, 0))
@@ -4768,6 +4832,10 @@ class MainWindow(QMainWindow):
         try:
             mapping = self.get_button_mapping()
             state["button_mapping"] = self._jsonable(mapping)
+            self._snapshot_active_button_mapping()
+            state["button_mappings_by_controller"] = self._jsonable(
+                getattr(self, "_button_mappings_by_controller", {}) or {}
+            )
         except Exception:
             pass
 
@@ -4852,8 +4920,14 @@ class MainWindow(QMainWindow):
             pass
 
         # Controller-bound settings (button mapping + curves) may need controller-selected UI.
+        try:
+            bmc = state.get("button_mappings_by_controller", {}) or {}
+            self._button_mappings_by_controller = dict(bmc) if isinstance(bmc, dict) else {}
+        except Exception:
+            self._button_mappings_by_controller = {}
         self._pending_profile_state = {
             "button_mapping": state.get("button_mapping", None),
+            "button_mappings_by_controller": state.get("button_mappings_by_controller", None),
             "curve_state": state.get("curve_state", None),
         }
 
@@ -4875,6 +4949,10 @@ class MainWindow(QMainWindow):
         # in the profile should be reset to "Unassigned" so old selections don't linger.
         try:
             bm = st.get("button_mapping", None)
+            per_controller = st.get("button_mappings_by_controller", None)
+            key = self._controller_mapping_key()
+            if key and isinstance(per_controller, dict):
+                bm = per_controller.get(key, bm)
 
             if hasattr(self, "button_map_combos"):
                 # Default everything to Unassigned first
