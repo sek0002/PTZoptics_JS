@@ -2074,11 +2074,11 @@ class HexCommandsListWidget(QWidget):
                 pass
 
 
-class RtmpViewerWidget(QWidget):
+class StreamViewerWidget(QWidget):
     """
-    RTMP viewer tab.
-    - Auto-follows the currently selected target's IP + RTMP port.
-    - Builds URL: rtmp://<ip>:<port>/<path>
+    Stream viewer tab.
+    - Auto-follows the currently selected target's IP + stream protocol/port.
+    - Builds URL: <scheme>://<ip>:<port>/<path>
     - Uses QtMultimedia if available; otherwise shows a fallback message.
     """
     def __init__(self, mono: QFont, label_font: QFont, parent=None):
@@ -2086,13 +2086,15 @@ class RtmpViewerWidget(QWidget):
         self._mono = mono
         self._label_font = label_font
         self._ip: str | None = None
-        self._rtmp_port: int | None = None
+        self._stream_protocol: str = "RTMP"
+        self._stream_port: int | None = None
+        self._stream_endpoint: str | None = None
 
         root = QVBoxLayout()
         root.setContentsMargins(10, 10, 10, 10)
         root.setSpacing(10)
 
-        title = QLabel("RTMP preview")
+        title = QLabel("Stream preview")
         title.setFont(label_font)
         title.setStyleSheet("color: rgb(235,235,235); font-weight: 600;")
         root.addWidget(title)
@@ -2107,17 +2109,25 @@ class RtmpViewerWidget(QWidget):
         self.path_edit.setStyleSheet(
             "QLineEdit { background: rgb(28,31,36); color: rgb(235,235,235); padding: 6px; }"
         )
+        self.endpoint_edit = QLineEdit("")
+        self.endpoint_edit.setFont(mono)
+        self.endpoint_edit.setPlaceholderText("user:pwd")
+        self.endpoint_edit.setStyleSheet(
+            "QLineEdit { background: rgb(28,31,36); color: rgb(235,235,235); padding: 6px; }"
+        )
 
-        self.play_btn = QPushButton("Play")
-        self.play_btn.setFont(mono)
         self.stop_btn = QPushButton("Stop")
         self.stop_btn.setFont(mono)
 
         row.addWidget(QLabel("Path:"))
         row.addWidget(self.path_edit, stretch=1)
-        row.addWidget(self.play_btn)
         row.addWidget(self.stop_btn)
         root.addLayout(row)
+        endpoint_row = QHBoxLayout()
+        endpoint_row.setSpacing(8)
+        endpoint_row.addWidget(QLabel("Endpoint:"))
+        endpoint_row.addWidget(self.endpoint_edit, stretch=1)
+        root.addLayout(endpoint_row)
 
         # URL / status
         self.url_label = QLabel("URL: (no target selected)")
@@ -2135,7 +2145,7 @@ class RtmpViewerWidget(QWidget):
         if QMediaPlayer is None or QVideoWidget is None or QUrl is None:
             msg = QLabel(
                 "QtMultimedia is not available in this environment.\n"
-                "Install/enable PySide6 QtMultimedia (+ a backend) to preview RTMP."
+                "Install/enable PySide6 QtMultimedia (+ a backend) to preview RTMP/RTSP."
             )
             msg.setFont(mono)
             msg.setStyleSheet("color: rgb(200,200,200);")
@@ -2160,38 +2170,88 @@ class RtmpViewerWidget(QWidget):
 
         self.setLayout(root)
 
+        self._autoplay_timer = QTimer(self)
+        self._autoplay_timer.setSingleShot(True)
+        self._autoplay_timer.timeout.connect(self.play)
+
         # Wiring
-        self.path_edit.textChanged.connect(self._refresh_url_label)
-        self.play_btn.clicked.connect(self.play)
+        self.path_edit.textChanged.connect(self._on_stream_input_changed)
+        self.endpoint_edit.textChanged.connect(self._on_endpoint_text_changed)
         self.stop_btn.clicked.connect(self.stop)
 
         self._refresh_url_label()
 
-    def set_target(self, ip: str | None, rtmp_port: int | None):
+    def set_target(self, ip: str | None, stream_protocol: str | None, stream_port: int | None, stream_endpoint: str | None = None):
         self._ip = (ip or "").strip() or None
+        proto = (stream_protocol or "RTMP").strip().upper()
+        self._stream_protocol = proto if proto in ("RTMP", "RTSP") else "RTMP"
+        self._stream_endpoint = (stream_endpoint or "").strip() or None
         try:
-            self._rtmp_port = int(rtmp_port) if rtmp_port is not None else None
+            self.endpoint_edit.blockSignals(True)
+            self.endpoint_edit.setText(self._stream_endpoint or "")
+        finally:
+            self.endpoint_edit.blockSignals(False)
+        try:
+            self._stream_port = int(stream_port) if stream_port is not None else None
         except Exception:
-            self._rtmp_port = None
+            self._stream_port = None
         self._refresh_url_label()
+        self._schedule_autoplay()
+
+    def _on_stream_input_changed(self, _text: str):
+        self._refresh_url_label()
+        self._schedule_autoplay()
+
+    def _on_endpoint_text_changed(self, text: str):
+        self._stream_endpoint = (text or "").strip() or None
+        self._refresh_url_label()
+        self._schedule_autoplay()
+        cb = getattr(self, "on_stream_endpoint_changed", None)
+        if callable(cb):
+            try:
+                cb(self._stream_endpoint)
+            except Exception:
+                pass
+
+    def _schedule_autoplay(self):
+        try:
+            if self._build_url() is None:
+                return
+            self._autoplay_timer.start(250)
+        except Exception:
+            pass
 
     def _build_url(self) -> str | None:
-        if not self._ip or not self._rtmp_port:
+        host_part = None
+        if self._stream_endpoint:
+            if "@" in self._stream_endpoint:
+                # Backward-compatible: allow a fully specified authority string if already provided.
+                host_part = self._stream_endpoint
+            elif self._ip and self._stream_port:
+                host_part = f"{self._stream_endpoint}@{self._ip}:{int(self._stream_port)}"
+        elif self._ip and self._stream_port:
+            host_part = f"{self._ip}:{int(self._stream_port)}"
+        if not host_part:
             return None
         path = (self.path_edit.text() or "").strip().lstrip("/")
         if not path:
             path = "live"
-        return f"rtmp://{self._ip}:{int(self._rtmp_port)}/{path}"
+        scheme = "rtsp" if self._stream_protocol == "RTSP" else "rtmp"
+        return f"{scheme}://{host_part}/{path}"
 
     def _refresh_url_label(self):
         url = self._build_url()
         if url is None:
             if not self._ip:
                 self.url_label.setText("URL: (no target selected)")
-                self.status_label.setText("Select a target with an RTMP port to preview video.")
+                self.status_label.setText("Select a target with stream details to preview video.")
             else:
-                self.url_label.setText(f"URL: (missing RTMP port for {self._ip})")
-                self.status_label.setText("Set RTMP port on the target to enable preview.")
+                self.url_label.setText(f"URL: (missing {self._stream_protocol} stream details for {self._ip})")
+                self.status_label.setText(f"Set {self._stream_protocol} stream port and optional credentials to enable preview.")
+            try:
+                self._autoplay_timer.stop()
+            except Exception:
+                pass
             return
         self.url_label.setText(f"URL: {url}")
         self.status_label.setText("")
@@ -2223,6 +2283,22 @@ class RtmpViewerWidget(QWidget):
 class CameraStatusPanel(QGroupBox):
     """Bottom-right status box showing key camera parameters from VISCA inquiries."""
 
+    EXPOSURE_MODES = [
+        ("Full Auto", "04 39 00", 0x00),
+        ("Manual", "04 39 03", 0x03),
+        ("Shutter Priority", "04 39 0A", 0x0A),
+        ("Iris Priority", "04 39 0B", 0x0B),
+        ("Bright", "04 39 0D", 0x0D),
+    ]
+    WB_MODES = [
+        ("Auto", "04 35 00", 0x00),
+        ("Indoor", "04 35 01", 0x01),
+        ("Outdoor", "04 35 02", 0x02),
+        ("One Push", "04 35 03", 0x03),
+        ("Manual", "04 35 05", 0x05),
+        ("Color Temperature", "04 35 20", 0x20),
+    ]
+
     def __init__(self, mono: QFont, label_font: QFont, parent=None):
         super().__init__("Camera status", parent)
         self.setFont(label_font)
@@ -2238,6 +2314,17 @@ class CameraStatusPanel(QGroupBox):
         form.setHorizontalSpacing(10)
         form.setVerticalSpacing(6)
 
+        self.status_profile_combo = QComboBox()
+        self.status_profile_combo.setFont(mono)
+        self.status_profile_combo.setEditable(True)
+        self.status_profile_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.status_profile_load_btn = QPushButton("Load")
+        self.status_profile_load_btn.setFont(mono)
+        self.status_profile_save_btn = QPushButton("Save")
+        self.status_profile_save_btn.setFont(mono)
+        self.status_profile_saveas_btn = QPushButton("Save as…")
+        self.status_profile_saveas_btn.setFont(mono)
+
         def _mk_val(default: str = "—") -> QLabel:
             lbl = QLabel(default)
             lbl.setFont(mono)
@@ -2245,44 +2332,191 @@ class CameraStatusPanel(QGroupBox):
             lbl.setTextInteractionFlags(Qt.TextSelectableByMouse)
             return lbl
 
-        # Lens block
-        self.zoom_pos = _mk_val()
-        self.focus_pos = _mk_val()
-        self.focus_mode = _mk_val()
+        self.exposure_mode_combo = QComboBox()
+        self.exposure_mode_combo.setFont(mono)
+        self.exposure_mode_combo.addItem("Set exposure mode…", None)
+        for label, payload, ae_code in self.EXPOSURE_MODES:
+            self.exposure_mode_combo.addItem(label, (payload, ae_code))
+        self.wb_mode_combo = QComboBox()
+        self.wb_mode_combo.setFont(mono)
+        self.wb_mode_combo.addItem("Set white balance…", None)
+        for label, payload, wb_code in self.WB_MODES:
+            self.wb_mode_combo.addItem(label, (payload, wb_code))
 
-        # Camera block
-        self.r_gain = _mk_val()
-        self.b_gain = _mk_val()
-        self.wb_mode = _mk_val()
-        self.aperture = _mk_val()
-        self.ae_mode = _mk_val()
-        self.backlight_bit = _mk_val()
-        self.exposure_comp_bit = _mk_val()
-        self.shutter_pos = _mk_val()
-        self.iris_pos = _mk_val()
-        self.bright_pos = _mk_val()
-        self.exposure_comp_pos = _mk_val()
+        self.gain_limit_value = _mk_val()
+        self.gain_limit_reset_btn = QPushButton("Reset")
+        self.gain_limit_reset_btn.setFont(mono)
+        self.gain_limit_reset_btn.setToolTip("Send CAM_Gain Reset")
+        self.gain_limit_spin = QSpinBox()
+        self.gain_limit_spin.setFont(mono)
+        self.gain_limit_spin.setRange(0, 15)
+        self.gain_limit_spin.setSingleStep(1)
+        self.gain_limit_spin.setToolTip("Direct gain limit value")
+        self.gain_limit_set_btn = QPushButton("Set")
+        self.gain_limit_set_btn.setFont(mono)
+        self.gain_limit_set_btn.setToolTip("Send CAM_Gain Limit direct value")
+        self.brightness_value = _mk_val()
+        self.brightness_spin = QSpinBox()
+        self.brightness_spin.setFont(mono)
+        self.brightness_spin.setRange(0, 255)
+        self.brightness_spin.setSingleStep(1)
+        self.brightness_spin.setToolTip("Direct brightness value")
+        self.brightness_set_btn = QPushButton("Set")
+        self.brightness_set_btn.setFont(mono)
+        self.brightness_set_btn.setToolTip("Send CAM_Brightness direct value")
+        self.luminance_value = _mk_val()
+        self.luminance_spin = QSpinBox()
+        self.luminance_spin.setFont(mono)
+        self.luminance_spin.setRange(0, 255)
+        self.luminance_spin.setSingleStep(1)
+        self.luminance_spin.setToolTip("Direct luminance value")
+        self.luminance_set_btn = QPushButton("Set")
+        self.luminance_set_btn.setFont(mono)
+        self.luminance_set_btn.setToolTip("Send CAM_Bright direct value")
+        self.contrast_value = _mk_val()
+        self.contrast_spin = QSpinBox()
+        self.contrast_spin.setFont(mono)
+        self.contrast_spin.setRange(0, 255)
+        self.contrast_spin.setSingleStep(1)
+        self.contrast_spin.setToolTip("Direct contrast value")
+        self.contrast_set_btn = QPushButton("Set")
+        self.contrast_set_btn.setFont(mono)
+        self.contrast_set_btn.setToolTip("Send CAM_Contrast direct value")
+        self.exp_comp_value = _mk_val()
+        self.exp_comp_reset_btn = QPushButton("Reset")
+        self.exp_comp_reset_btn.setFont(mono)
+        self.exp_comp_reset_btn.setToolTip("Send CAM_ExpComp reset")
+        self.exp_comp_spin = QSpinBox()
+        self.exp_comp_spin.setFont(mono)
+        self.exp_comp_spin.setRange(0, 255)
+        self.exp_comp_spin.setSingleStep(1)
+        self.exp_comp_spin.setToolTip("Direct exposure compensation value")
+        self.exp_comp_set_btn = QPushButton("Set")
+        self.exp_comp_set_btn.setFont(mono)
+        self.exp_comp_set_btn.setToolTip("Send CAM_ExpComp direct value")
+        self.color_temp_value = _mk_val()
+        self.color_temp_reset_btn = QPushButton("Reset")
+        self.color_temp_reset_btn.setFont(mono)
+        self.color_temp_reset_btn.setToolTip("Send CAM_ColorTemp reset")
+        self.color_temp_spin = QSpinBox()
+        self.color_temp_spin.setFont(mono)
+        self.color_temp_spin.setRange(0, 0x37)
+        self.color_temp_spin.setSingleStep(1)
+        self.color_temp_spin.setToolTip("Direct color temperature value")
+        self.color_temp_set_btn = QPushButton("Set")
+        self.color_temp_set_btn.setFont(mono)
+        self.color_temp_set_btn.setToolTip("Send CAM_ColorTemp direct value")
+        self.color_hue_value = _mk_val()
+        self._color_hue_current: int | None = None
+        self.color_hue_left_btn = QToolButton()
+        self.color_hue_left_btn.setFont(mono)
+        self.color_hue_left_btn.setText("<")
+        self.color_hue_left_btn.setToolTip("Decrease color hue")
+        self.color_hue_right_btn = QToolButton()
+        self.color_hue_right_btn.setFont(mono)
+        self.color_hue_right_btn.setText(">")
+        self.color_hue_right_btn.setToolTip("Increase color hue")
+        self.r_gain_value = _mk_val()
+        self._r_gain_current: int | None = None
+        self.r_gain_left_btn = QToolButton()
+        self.r_gain_left_btn.setFont(mono)
+        self.r_gain_left_btn.setText("<")
+        self.r_gain_left_btn.setToolTip("Decrease red gain")
+        self.r_gain_right_btn = QToolButton()
+        self.r_gain_right_btn.setFont(mono)
+        self.r_gain_right_btn.setText(">")
+        self.r_gain_right_btn.setToolTip("Increase red gain")
+        self.b_gain_value = _mk_val()
+        self._b_gain_current: int | None = None
+        self.b_gain_left_btn = QToolButton()
+        self.b_gain_left_btn.setFont(mono)
+        self.b_gain_left_btn.setText("<")
+        self.b_gain_left_btn.setToolTip("Decrease blue gain")
+        self.b_gain_right_btn = QToolButton()
+        self.b_gain_right_btn.setFont(mono)
+        self.b_gain_right_btn.setText(">")
+        self.b_gain_right_btn.setToolTip("Increase blue gain")
+        self.pt_mode_indicator = QToolButton()
+        self.pt_mode_indicator.setFont(mono)
+        self.pt_mode_indicator.setAutoRaise(False)
+        self.pt_mode_indicator.setFixedSize(34, 34)
+        self.pt_mode_indicator.setToolTip("Pan/Tilt axis mode")
 
-        # Separate inquiries
-        self.backlight_mode = _mk_val()
-        self.af_sensitivity = _mk_val()
-
-        form.addRow("Zoom position", self.zoom_pos)
-        form.addRow("Focus position", self.focus_pos)
-        form.addRow("Focus mode", self.focus_mode)
-        form.addRow("R_Gain", self.r_gain)
-        form.addRow("B_Gain", self.b_gain)
-        form.addRow("WB mode", self.wb_mode)
-        form.addRow("Aperture", self.aperture)
-        form.addRow("AE mode", self.ae_mode)
-        form.addRow("Backlight (bit)", self.backlight_bit)
-        form.addRow("ExposureComp (bit)", self.exposure_comp_bit)
-        form.addRow("Shutter position", self.shutter_pos)
-        form.addRow("Iris position", self.iris_pos)
-        form.addRow("Bright position", self.bright_pos)
-        form.addRow("ExposureComp position", self.exposure_comp_pos)
-        form.addRow("Backlight mode", self.backlight_mode)
-        form.addRow("AF sensitivity", self.af_sensitivity)
+        status_profile_row = QHBoxLayout()
+        status_profile_row.setSpacing(6)
+        status_profile_row.addWidget(self.status_profile_combo, stretch=1)
+        status_profile_row.addWidget(self.status_profile_load_btn)
+        status_profile_row.addWidget(self.status_profile_save_btn)
+        status_profile_row.addWidget(self.status_profile_saveas_btn)
+        form.addRow("Status profile", status_profile_row)
+        form.addRow("Exposure mode", self.exposure_mode_combo)
+        form.addRow("WB mode", self.wb_mode_combo)
+        gain_row = QHBoxLayout()
+        gain_row.setSpacing(6)
+        gain_row.addWidget(self.gain_limit_value)
+        gain_row.addStretch(1)
+        gain_row.addWidget(self.gain_limit_reset_btn)
+        gain_row.addWidget(self.gain_limit_spin)
+        gain_row.addWidget(self.gain_limit_set_btn)
+        form.addRow("Gain limit", gain_row)
+        bright_row = QHBoxLayout()
+        bright_row.setSpacing(6)
+        bright_row.addWidget(self.brightness_value)
+        bright_row.addStretch(1)
+        bright_row.addWidget(self.brightness_spin)
+        bright_row.addWidget(self.brightness_set_btn)
+        form.addRow("Brightness", bright_row)
+        luminance_row = QHBoxLayout()
+        luminance_row.setSpacing(6)
+        luminance_row.addWidget(self.luminance_value)
+        luminance_row.addStretch(1)
+        luminance_row.addWidget(self.luminance_spin)
+        luminance_row.addWidget(self.luminance_set_btn)
+        form.addRow("Luminance", luminance_row)
+        contrast_row = QHBoxLayout()
+        contrast_row.setSpacing(6)
+        contrast_row.addWidget(self.contrast_value)
+        contrast_row.addStretch(1)
+        contrast_row.addWidget(self.contrast_spin)
+        contrast_row.addWidget(self.contrast_set_btn)
+        form.addRow("Contrast", contrast_row)
+        exp_comp_row = QHBoxLayout()
+        exp_comp_row.setSpacing(6)
+        exp_comp_row.addWidget(self.exp_comp_value)
+        exp_comp_row.addStretch(1)
+        exp_comp_row.addWidget(self.exp_comp_reset_btn)
+        exp_comp_row.addWidget(self.exp_comp_spin)
+        exp_comp_row.addWidget(self.exp_comp_set_btn)
+        form.addRow("Exposure comp", exp_comp_row)
+        color_temp_row = QHBoxLayout()
+        color_temp_row.setSpacing(6)
+        color_temp_row.addWidget(self.color_temp_value)
+        color_temp_row.addStretch(1)
+        color_temp_row.addWidget(self.color_temp_reset_btn)
+        color_temp_row.addWidget(self.color_temp_spin)
+        color_temp_row.addWidget(self.color_temp_set_btn)
+        form.addRow("Color temp", color_temp_row)
+        color_hue_row = QHBoxLayout()
+        color_hue_row.setSpacing(6)
+        color_hue_row.addWidget(self.color_hue_value)
+        color_hue_row.addStretch(1)
+        color_hue_row.addWidget(self.color_hue_left_btn)
+        color_hue_row.addWidget(self.color_hue_right_btn)
+        form.addRow("Color hue", color_hue_row)
+        r_gain_row = QHBoxLayout()
+        r_gain_row.setSpacing(6)
+        r_gain_row.addWidget(self.r_gain_value)
+        r_gain_row.addStretch(1)
+        r_gain_row.addWidget(self.r_gain_left_btn)
+        r_gain_row.addWidget(self.r_gain_right_btn)
+        form.addRow("R gain", r_gain_row)
+        b_gain_row = QHBoxLayout()
+        b_gain_row.setSpacing(6)
+        b_gain_row.addWidget(self.b_gain_value)
+        b_gain_row.addStretch(1)
+        b_gain_row.addWidget(self.b_gain_left_btn)
+        b_gain_row.addWidget(self.b_gain_right_btn)
+        form.addRow("B gain", b_gain_row)
 
         # Actions
         btn_row = QHBoxLayout()
@@ -2291,26 +2525,14 @@ class CameraStatusPanel(QGroupBox):
         self.refresh_btn.setToolTip("Send inquiry commands and update values")
         btn_row.addWidget(self.refresh_btn)
         btn_row.addStretch(1)
+        btn_row.addWidget(self.pt_mode_indicator)
         form.addRow(btn_row)
 
         self.setLayout(form)
 
     # --- update helpers
     def set_zoom_focus(self, zoom_u16: int | None, focus_u16: int | None, focus_mode_auto: bool | None):
-        if zoom_u16 is None:
-            self.zoom_pos.setText("—")
-        else:
-            self.zoom_pos.setText(f"0x{zoom_u16:04X} ({zoom_u16})")
-
-        if focus_u16 is None:
-            self.focus_pos.setText("—")
-        else:
-            self.focus_pos.setText(f"0x{focus_u16:04X} ({focus_u16})")
-
-        if focus_mode_auto is None:
-            self.focus_mode.setText("—")
-        else:
-            self.focus_mode.setText("Auto" if focus_mode_auto else "Manual")
+        return
 
     def set_camera_block(
         self,
@@ -2326,35 +2548,182 @@ class CameraStatusPanel(QGroupBox):
         bright: int | None,
         exp_comp_pos: int | None,
     ):
-        self.r_gain.setText("—" if r_gain is None else f"0x{r_gain:02X} ({r_gain})")
-        self.b_gain.setText("—" if b_gain is None else f"0x{b_gain:02X} ({b_gain})")
-        self.wb_mode.setText("—" if wb_mode is None else f"0x{wb_mode:01X} ({wb_mode})")
-        self.aperture.setText("—" if aperture is None else f"0x{aperture:01X} ({aperture})")
-        self.ae_mode.setText("—" if ae_mode is None else f"0x{ae_mode:02X} ({ae_mode})")
-
-        if backlight_bit is None:
-            self.backlight_bit.setText("—")
-        else:
-            self.backlight_bit.setText("On" if backlight_bit else "Off")
-
-        if exposure_comp_bit is None:
-            self.exposure_comp_bit.setText("—")
-        else:
-            self.exposure_comp_bit.setText("On" if exposure_comp_bit else "Off")
-
-        self.shutter_pos.setText("—" if shutter is None else f"0x{shutter:02X} ({shutter})")
-        self.iris_pos.setText("—" if iris is None else f"0x{iris:02X} ({iris})")
-        self.bright_pos.setText("—" if bright is None else f"0x{bright:02X} ({bright})")
-        self.exposure_comp_pos.setText("—" if exp_comp_pos is None else f"0x{exp_comp_pos:02X} ({exp_comp_pos})")
+        self.set_r_gain(r_gain)
+        self.set_b_gain(b_gain)
+        self.set_luminance(bright)
+        self.set_wb_mode(wb_mode)
+        self.set_exposure_mode(ae_mode)
 
     def set_backlight_mode(self, on: bool | None):
-        if on is None:
-            self.backlight_mode.setText("—")
-        else:
-            self.backlight_mode.setText("On" if on else "Off")
+        return
 
     def set_af_sensitivity(self, level: str | None):
-        self.af_sensitivity.setText(level or "—")
+        return
+
+    def set_gain_limit(self, value: int | None):
+        if value is None:
+            self.gain_limit_value.setText("—")
+            return
+        self.gain_limit_value.setText(f"0x{int(value):X} ({int(value)})")
+        try:
+            self.gain_limit_spin.blockSignals(True)
+            self.gain_limit_spin.setValue(int(value))
+        except Exception:
+            pass
+        finally:
+            try:
+                self.gain_limit_spin.blockSignals(False)
+            except Exception:
+                pass
+
+    def set_brightness(self, value: int | None):
+        if value is None:
+            self.brightness_value.setText("—")
+            return
+        self.brightness_value.setText(f"0x{int(value):02X} ({int(value)})")
+        try:
+            self.brightness_spin.blockSignals(True)
+            self.brightness_spin.setValue(int(value))
+        except Exception:
+            pass
+        finally:
+            try:
+                self.brightness_spin.blockSignals(False)
+            except Exception:
+                pass
+
+    def set_luminance(self, value: int | None):
+        if value is None:
+            self.luminance_value.setText("—")
+            return
+        self.luminance_value.setText(f"0x{int(value):02X} ({int(value)})")
+        try:
+            self.luminance_spin.blockSignals(True)
+            self.luminance_spin.setValue(int(value))
+        except Exception:
+            pass
+        finally:
+            try:
+                self.luminance_spin.blockSignals(False)
+            except Exception:
+                pass
+
+    def set_contrast(self, value: int | None):
+        if value is None:
+            self.contrast_value.setText("—")
+            return
+        self.contrast_value.setText(f"0x{int(value):02X} ({int(value)})")
+        try:
+            self.contrast_spin.blockSignals(True)
+            self.contrast_spin.setValue(int(value))
+        except Exception:
+            pass
+        finally:
+            try:
+                self.contrast_spin.blockSignals(False)
+            except Exception:
+                pass
+
+    def set_exp_comp(self, value: int | None):
+        if value is None:
+            self.exp_comp_value.setText("—")
+            return
+        self.exp_comp_value.setText(f"0x{int(value):02X} ({int(value)})")
+        try:
+            self.exp_comp_spin.blockSignals(True)
+            self.exp_comp_spin.setValue(int(value))
+        except Exception:
+            pass
+        finally:
+            try:
+                self.exp_comp_spin.blockSignals(False)
+            except Exception:
+                pass
+
+    def set_color_temp(self, value: int | None):
+        if value is None:
+            self.color_temp_value.setText("—")
+            return
+        self.color_temp_value.setText(f"0x{int(value):02X} ({int(value)})")
+        try:
+            self.color_temp_spin.blockSignals(True)
+            self.color_temp_spin.setValue(int(value))
+        except Exception:
+            pass
+        finally:
+            try:
+                self.color_temp_spin.blockSignals(False)
+            except Exception:
+                pass
+
+    def set_color_hue(self, value: int | None):
+        self._color_hue_current = None if value is None else int(value)
+        if value is None:
+            self.color_hue_value.setText("—")
+            return
+        signed_offset = (int(value) - 0x07) * 2
+        if signed_offset > 0:
+            deg = f"+{signed_offset}"
+        else:
+            deg = str(signed_offset)
+        self.color_hue_value.setText(f"0x{int(value):X} ({deg} deg)")
+
+    def set_r_gain(self, value: int | None):
+        self._r_gain_current = None if value is None else int(value)
+        if value is None:
+            self.r_gain_value.setText("—")
+            return
+        self.r_gain_value.setText(f"0x{int(value):02X} ({int(value)})")
+
+    def set_b_gain(self, value: int | None):
+        self._b_gain_current = None if value is None else int(value)
+        if value is None:
+            self.b_gain_value.setText("—")
+            return
+        self.b_gain_value.setText(f"0x{int(value):02X} ({int(value)})")
+
+    def set_wb_mode(self, wb_mode: int | None):
+        try:
+            self.wb_mode_combo.blockSignals(True)
+            if wb_mode is None:
+                self.wb_mode_combo.setCurrentIndex(0)
+                return
+            target_idx = 0
+            for i in range(1, self.wb_mode_combo.count()):
+                data = self.wb_mode_combo.itemData(i)
+                if isinstance(data, (list, tuple)) and len(data) == 2 and int(data[1]) == int(wb_mode):
+                    target_idx = i
+                    break
+            self.wb_mode_combo.setCurrentIndex(target_idx)
+        except Exception:
+            pass
+        finally:
+            try:
+                self.wb_mode_combo.blockSignals(False)
+            except Exception:
+                pass
+
+    def set_exposure_mode(self, ae_mode: int | None):
+        try:
+            self.exposure_mode_combo.blockSignals(True)
+            if ae_mode is None:
+                self.exposure_mode_combo.setCurrentIndex(0)
+                return
+            target_idx = 0
+            for i in range(1, self.exposure_mode_combo.count()):
+                data = self.exposure_mode_combo.itemData(i)
+                if isinstance(data, (list, tuple)) and len(data) == 2 and int(data[1]) == int(ae_mode):
+                    target_idx = i
+                    break
+            self.exposure_mode_combo.setCurrentIndex(target_idx)
+        except Exception:
+            pass
+        finally:
+            try:
+                self.exposure_mode_combo.blockSignals(False)
+            except Exception:
+                pass
+
 
 
 class MainWindow(QMainWindow):
@@ -2386,6 +2755,13 @@ class MainWindow(QMainWindow):
         self._current_profile: str | None = None
         # pending state to apply once controller/mapping widgets exist
         self._pending_profile_state: dict[str, object] | None = None
+        self._camera_status_profiles_dir = os.path.join(_ptz_user_data_dir(), "camera_status_profiles")
+        try:
+            os.makedirs(self._camera_status_profiles_dir, exist_ok=True)
+        except Exception:
+            pass
+        self._active_camera_status_profile: str | None = None
+        self._camera_status_refresh_enabled = False
 
         # Debounce repeated identical VISCA commands (prevents rapid duplicate sends)
         self._last_send: dict[tuple[str,int], tuple[str,float]] = {}
@@ -2397,6 +2773,12 @@ class MainWindow(QMainWindow):
         self._last_any_send_t: dict[tuple[str,int], float] = {}
         self._rate_pending: dict[tuple[str,int], tuple[str,str,bool]] = {}
         self._rate_timers: dict[tuple[str,int], QTimer] = {}
+        self._pt_axis_mode_relative_enabled = False
+        self._pt_axis_mode_absolute_enabled = False
+        self._pt_abs_pan_limit = 0x1200
+        self._pt_abs_tilt_limit = 0x0500
+        self._pt_rel_pan_step = 0x0200
+        self._pt_rel_tilt_step = 0x0100
 
         # Targets UX state
         self._active_target_slot: int | None = None
@@ -2515,9 +2897,10 @@ class MainWindow(QMainWindow):
         self.curve_editor = ResponseCurveEditor(label_font=label_font, mono=mono)
         self.left_tabs.addTab(self.curve_editor, "Response curve")
 
-        # Tab 2: RTMP viewer (follows selected target IP + RTMP port)
-        self.rtmp_viewer = RtmpViewerWidget(mono=mono, label_font=label_font)
-        self.left_tabs.addTab(self.rtmp_viewer, "RTMP")
+        # Tab 2: Stream viewer (follows selected target IP + stream protocol/port)
+        self.stream_viewer = StreamViewerWidget(mono=mono, label_font=label_font)
+        self.stream_viewer.on_stream_endpoint_changed = self._on_stream_viewer_endpoint_changed
+        self.left_tabs.addTab(self.stream_viewer, "Stream")
 
         # Tab 3: Virtual pad/buttons
         self.virtual_controller = VirtualControllerWidget(
@@ -2730,7 +3113,7 @@ class MainWindow(QMainWindow):
         self.targets_scroll.setFrameShape(QFrame.NoFrame)
         self.targets_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.targets_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.targets_scroll.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        self.targets_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         self.targets_container = QWidget()
         self.targets_container_layout = QVBoxLayout()
@@ -2761,11 +3144,17 @@ class MainWindow(QMainWindow):
             port_edit.setPlaceholderText("port")
             port_edit.setMaximumWidth(40)
 
-            # RTMP port (stored per target; not used by VISCA sender)
-            rtmp_edit = QLineEdit()
-            rtmp_edit.setFont(mono)
-            rtmp_edit.setPlaceholderText("port")
-            rtmp_edit.setMaximumWidth(40)
+            # Preview stream settings (stored per target; not used by VISCA sender)
+            stream_proto_combo = QComboBox()
+            stream_proto_combo.setFont(mono)
+            stream_proto_combo.addItem("RTMP", "RTMP")
+            stream_proto_combo.addItem("RTSP", "RTSP")
+            stream_proto_combo.setFixedWidth(78)
+
+            stream_port_edit = QLineEdit()
+            stream_port_edit.setFont(mono)
+            stream_port_edit.setPlaceholderText("port")
+            stream_port_edit.setMaximumWidth(52)
 
             # Small red bin button (delete)
             bin_btn = QToolButton()
@@ -2826,8 +3215,9 @@ class MainWindow(QMainWindow):
             row1.addWidget(ip_edit, stretch=1)
             row1.addWidget(QLabel("VISCA"))
             row1.addWidget(port_edit)
-            row1.addWidget(QLabel("RTMP"))
-            row1.addWidget(rtmp_edit)
+            row1.addWidget(QLabel("Stream"))
+            row1.addWidget(stream_proto_combo)
+            row1.addWidget(stream_port_edit)
             row1.addStretch(1)
             row1.addWidget(add_btn)
             row1.addWidget(bin_btn)
@@ -2838,7 +3228,8 @@ class MainWindow(QMainWindow):
             box.installEventFilter(self)
             ip_edit.setProperty("slot", slot)
             port_edit.setProperty("slot", slot)
-            rtmp_edit.setProperty("slot", slot)
+            stream_proto_combo.setProperty("slot", slot)
+            stream_port_edit.setProperty("slot", slot)
             bin_btn.setProperty("slot", slot)
             add_btn.setProperty("slot", slot)
 
@@ -2851,7 +3242,8 @@ class MainWindow(QMainWindow):
             # Autosave on typing (text input)
             ip_edit.textChanged.connect(lambda _txt, s=slot: self._schedule_target_autosave(int(s)))
             port_edit.textChanged.connect(lambda _txt, s=slot: self._schedule_target_autosave(int(s)))
-            rtmp_edit.textChanged.connect(lambda _txt, s=slot: self._schedule_target_autosave(int(s)))
+            stream_proto_combo.currentIndexChanged.connect(lambda _idx, s=slot: self._schedule_target_autosave(int(s)))
+            stream_port_edit.textChanged.connect(lambda _txt, s=slot: self._schedule_target_autosave(int(s)))
 
             # Delete (bin) / Add (+)
             bin_btn.clicked.connect(lambda _=False, s=slot: self._on_target_box_clear(int(s)))
@@ -2862,7 +3254,8 @@ class MainWindow(QMainWindow):
                 "box": box,
                 "ip": ip_edit,
                 "port": port_edit,      # VISCA port (UDP)
-                "rtmp": rtmp_edit,      # RTMP port (optional)
+                "stream_proto": stream_proto_combo,
+                "stream_port": stream_port_edit,
                 "bin": bin_btn,
                 "add": add_btn,
             }
@@ -2923,10 +3316,10 @@ class MainWindow(QMainWindow):
 
         # Bottom-right status panel (camera inquiry decode)
         self.status_panel = CameraStatusPanel(mono=mono, label_font=label_font)
-        self.status_panel.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Minimum)
+        self.status_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         targets_col.addWidget(self.status_panel, stretch=0)
         targets_widget.setLayout(targets_col)
-        targets_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        targets_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
 
         right_panel_layout = QHBoxLayout()
@@ -2943,7 +3336,7 @@ class MainWindow(QMainWindow):
         splitter.addWidget(left_panel)
         splitter.addWidget(right_panel)
         splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 0)
+        splitter.setStretchFactor(1, 1)
         splitter.setHandleWidth(1)
         try:
             # Disable user resizing between columns
@@ -2972,6 +3365,36 @@ class MainWindow(QMainWindow):
 # Status panel wiring
         try:
             self.status_panel.refresh_btn.clicked.connect(self.refresh_camera_status)
+            self.status_panel.exposure_mode_combo.currentIndexChanged.connect(self._on_exposure_mode_selected)
+            self.status_panel.wb_mode_combo.currentIndexChanged.connect(self._on_wb_mode_selected)
+            self.status_panel.gain_limit_reset_btn.clicked.connect(self._on_gain_limit_reset_clicked)
+            self.status_panel.gain_limit_set_btn.clicked.connect(self._on_gain_limit_set_clicked)
+            self.status_panel.brightness_set_btn.clicked.connect(self._on_brightness_set_clicked)
+            self.status_panel.luminance_set_btn.clicked.connect(self._on_luminance_set_clicked)
+            self.status_panel.contrast_set_btn.clicked.connect(self._on_contrast_set_clicked)
+            self.status_panel.exp_comp_reset_btn.clicked.connect(self._on_exp_comp_reset_clicked)
+            self.status_panel.exp_comp_set_btn.clicked.connect(self._on_exp_comp_set_clicked)
+            self.status_panel.color_temp_reset_btn.clicked.connect(self._on_color_temp_reset_clicked)
+            self.status_panel.color_temp_set_btn.clicked.connect(self._on_color_temp_set_clicked)
+            self.status_panel.color_hue_left_btn.clicked.connect(lambda: self._step_color_hue(-1))
+            self.status_panel.color_hue_right_btn.clicked.connect(lambda: self._step_color_hue(1))
+            self.status_panel.r_gain_left_btn.clicked.connect(lambda: self._step_r_gain(-1))
+            self.status_panel.r_gain_right_btn.clicked.connect(lambda: self._step_r_gain(1))
+            self.status_panel.b_gain_left_btn.clicked.connect(lambda: self._step_b_gain(-1))
+            self.status_panel.b_gain_right_btn.clicked.connect(lambda: self._step_b_gain(1))
+            self.status_panel.status_profile_combo.currentTextChanged.connect(self._on_camera_status_profile_selected)
+            self.status_panel.status_profile_load_btn.clicked.connect(self._on_camera_status_profile_load_clicked)
+            self.status_panel.status_profile_save_btn.clicked.connect(self._on_camera_status_profile_save_clicked)
+            self.status_panel.status_profile_saveas_btn.clicked.connect(self._on_camera_status_profile_save_as_clicked)
+        except Exception:
+            pass
+        try:
+            self.status_panel.pt_mode_indicator.clicked.connect(self._cycle_pt_mode_indicator_action)
+            self._update_pt_mode_indicators()
+        except Exception:
+            pass
+        try:
+            self._refresh_camera_status_profile_list()
         except Exception:
             pass
         # Targets wiring
@@ -3082,19 +3505,29 @@ class MainWindow(QMainWindow):
                         slot = int(k)
                         ip = str(v.get("ip", "")).strip()
                         port = int(v.get("port", 0))
-                        rtmp_raw = v.get("rtmp_port", v.get("rtmp", None))
-                        rtmp_port = None
+                        stream_raw = v.get("stream_port", v.get("rtmp_port", v.get("rtmp", None)))
+                        stream_endpoint = str(v.get("stream_endpoint", "")).strip()
+                        stream_port = None
+                        stream_protocol = str(v.get("stream_protocol", "RTMP")).strip().upper()
+                        if stream_protocol not in ("RTMP", "RTSP"):
+                            stream_protocol = "RTMP"
                         try:
-                            if rtmp_raw not in (None, "", 0, "0"):
-                                rtmp_port = int(rtmp_raw)
-                                if not (1 <= rtmp_port <= 65535):
-                                    rtmp_port = None
+                            if stream_raw not in (None, "", 0, "0"):
+                                stream_port = int(stream_raw)
+                                if not (1 <= stream_port <= 65535):
+                                    stream_port = None
                         except Exception:
-                            rtmp_port = None
+                            stream_port = None
                         if 1 <= slot <= self._targets_max_slots and ip and 1 <= port <= 65535:
                             entry = {"ip": ip, "port": port}
-                            if rtmp_port is not None:
-                                entry["rtmp_port"] = int(rtmp_port)
+                            camera_status_profile = str(v.get("camera_status_profile", "")).strip()
+                            if stream_endpoint:
+                                entry["stream_endpoint"] = stream_endpoint
+                            if stream_port is not None:
+                                entry["stream_protocol"] = stream_protocol
+                                entry["stream_port"] = int(stream_port)
+                            if camera_status_profile:
+                                entry["camera_status_profile"] = camera_status_profile
                             self._targets[slot] = entry
                     except Exception:
                         continue
@@ -3107,12 +3540,20 @@ class MainWindow(QMainWindow):
             out = {}
             for k, v in sorted(self._targets.items()):
                 item = {"ip": v["ip"], "port": int(v["port"])}
-                rp = v.get("rtmp_port")
-                if rp is not None and str(rp).strip() != "":
+                sp = v.get("stream_port", v.get("rtmp_port"))
+                proto = str(v.get("stream_protocol", "RTMP")).strip().upper()
+                endpoint = str(v.get("stream_endpoint", "")).strip()
+                camera_status_profile = str(v.get("camera_status_profile", "")).strip()
+                if endpoint:
+                    item["stream_endpoint"] = endpoint
+                if sp is not None and str(sp).strip() != "":
                     try:
-                        item["rtmp_port"] = int(rp)
+                        item["stream_protocol"] = proto if proto in ("RTMP", "RTSP") else "RTMP"
+                        item["stream_port"] = int(sp)
                     except Exception:
                         pass
+                if camera_status_profile:
+                    item["camera_status_profile"] = camera_status_profile
                 out[str(k)] = item
             with open(self._targets_path, "w", encoding="utf-8") as f:
                 json.dump(out, f, indent=2)
@@ -3124,9 +3565,14 @@ class MainWindow(QMainWindow):
         if not v:
             return f"#{slot} (empty)"
         base = f"#{slot} {v['ip']}:{int(v['port'])}"
-        if v.get('rtmp_port') is not None:
+        stream_port = v.get("stream_port", v.get("rtmp_port"))
+        stream_protocol = str(v.get("stream_protocol", "RTMP")).strip().upper()
+        stream_endpoint = str(v.get("stream_endpoint", "")).strip()
+        if stream_endpoint:
+            base += f"  | {stream_protocol} {stream_endpoint}"
+        elif stream_port is not None:
             try:
-                base += f"  | RTMP {int(v['rtmp_port'])}"
+                base += f"  | {stream_protocol} {int(stream_port)}"
             except Exception:
                 pass
         return base
@@ -3181,31 +3627,142 @@ class MainWindow(QMainWindow):
 
 
 
-    def _valid_ip_port(self, ip: str, port_text: str, rtmp_text: str = "") -> tuple[bool, int, int | None]:
+    def _valid_ip_port(self, ip: str, port_text: str, stream_proto: str = "RTMP", stream_text: str = "", stream_endpoint: str = "") -> tuple[bool, int, str, int | None, str]:
         ip = (ip or "").strip()
         if not ip:
-            return (False, 0, None)
+            return (False, 0, "RTMP", None, "")
 
         # VISCA port (UDP) is required
         try:
             port = int((port_text or "").strip())
         except Exception:
-            return (False, 0, None)
+            return (False, 0, "RTMP", None, "")
         if not (1 <= port <= 65535):
-            return (False, 0, None)
+            return (False, 0, "RTMP", None, "")
 
-        # RTMP port is optional, but if provided it must be valid
-        rtmp_port: int | None = None
-        rtxt = (rtmp_text or "").strip()
-        if rtxt:
+        proto = (stream_proto or "RTMP").strip().upper()
+        if proto not in ("RTMP", "RTSP"):
+            proto = "RTMP"
+
+        endpoint = (stream_endpoint or "").strip()
+
+        # Stream port is optional, but if provided it must be valid
+        stream_port: int | None = None
+        stxt = (stream_text or "").strip()
+        if stxt:
             try:
-                rtmp_port = int(rtxt)
+                stream_port = int(stxt)
             except Exception:
-                return (False, 0, None)
-            if not (1 <= rtmp_port <= 65535):
-                return (False, 0, None)
+                return (False, 0, proto, None, endpoint)
+            if not (1 <= stream_port <= 65535):
+                return (False, 0, proto, None, endpoint)
 
-        return (True, port, rtmp_port)
+        return (True, port, proto, stream_port, endpoint)
+
+    def _on_stream_viewer_endpoint_changed(self, stream_endpoint: str | None) -> None:
+        slot = getattr(self, "_active_target_slot", None)
+        if slot is None:
+            return
+        try:
+            slot_i = int(slot)
+        except Exception:
+            return
+        entry = getattr(self, "_targets", {}).get(slot_i)
+        if not isinstance(entry, dict):
+            return
+
+        endpoint = (stream_endpoint or "").strip()
+        prev_endpoint = str(entry.get("stream_endpoint", "")).strip()
+        if endpoint == prev_endpoint:
+            return
+
+        if endpoint:
+            entry["stream_endpoint"] = endpoint
+        else:
+            entry.pop("stream_endpoint", None)
+        self._active_stream_endpoint = endpoint or None
+        self._targets[slot_i] = entry
+        self._save_targets()
+        self._refresh_targets_ui()
+
+    def _sync_active_stream_settings_from_viewer(self) -> None:
+        """Persist current Stream tab edits back into the active target before profile save/apply flows."""
+        slot = getattr(self, "_active_target_slot", None)
+        if slot is None:
+            return
+        try:
+            slot_i = int(slot)
+        except Exception:
+            return
+        entry = getattr(self, "_targets", {}).get(slot_i)
+        if not isinstance(entry, dict):
+            return
+        if not hasattr(self, "stream_viewer") or self.stream_viewer is None:
+            return
+
+        endpoint = str(self.stream_viewer.endpoint_edit.text() or "").strip()
+        proto = str(getattr(self, "_active_stream_protocol", entry.get("stream_protocol", "RTMP")) or "RTMP").strip().upper()
+        if proto not in ("RTMP", "RTSP"):
+            proto = "RTMP"
+        stream_port = getattr(self, "_active_stream_port", entry.get("stream_port", entry.get("rtmp_port", None)))
+
+        changed = False
+        prev_endpoint = str(entry.get("stream_endpoint", "")).strip()
+        if endpoint != prev_endpoint:
+            if endpoint:
+                entry["stream_endpoint"] = endpoint
+            else:
+                entry.pop("stream_endpoint", None)
+            changed = True
+
+        prev_proto = str(entry.get("stream_protocol", "RTMP")).strip().upper()
+        if prev_proto != proto:
+            entry["stream_protocol"] = proto
+            changed = True
+
+        try:
+            port_i = int(stream_port) if stream_port is not None else None
+        except Exception:
+            port_i = None
+        prev_port = entry.get("stream_port", entry.get("rtmp_port", None))
+        if port_i != prev_port:
+            if port_i is None:
+                entry.pop("stream_port", None)
+            else:
+                entry["stream_port"] = port_i
+            changed = True
+
+        if changed:
+            self._targets[slot_i] = entry
+            self._save_targets()
+
+    def _apply_saved_stream_viewer_state(self, sv: dict[str, object] | None) -> None:
+        """Restore Stream tab UI and persist endpoint back into the active target."""
+        if not isinstance(sv, dict):
+            return
+        if not hasattr(self, "stream_viewer") or self.stream_viewer is None:
+            return
+
+        path = str(sv.get("path", "") or "").strip()
+        endpoint = str(sv.get("endpoint", "") or "").strip()
+
+        try:
+            self.stream_viewer.path_edit.setText(path)
+        except Exception:
+            pass
+        try:
+            self.stream_viewer.endpoint_edit.setText(endpoint)
+        except Exception:
+            pass
+
+        try:
+            self._active_stream_endpoint = endpoint or None
+        except Exception:
+            pass
+        try:
+            self._sync_active_stream_settings_from_viewer()
+        except Exception:
+            pass
 
     def _schedule_target_autosave(self, slot: int):
         """Debounce autosave while typing."""
@@ -3232,20 +3789,44 @@ class MainWindow(QMainWindow):
 
         ip = w["ip"].text()
         port_text = w["port"].text()
-        rtmp_text = ""
+        stream_text = ""
+        stream_proto = "RTMP"
         try:
-            rtmp_text = w.get("rtmp").text() if w.get("rtmp") is not None else ""
+            stream_text = w.get("stream_port").text() if w.get("stream_port") is not None else ""
         except Exception:
-            rtmp_text = ""
+            stream_text = ""
+        try:
+            stream_proto = str(w.get("stream_proto").currentData() or "RTMP") if w.get("stream_proto") is not None else "RTMP"
+        except Exception:
+            stream_proto = "RTMP"
+        stream_endpoint = ""
+        try:
+            if getattr(self, "_active_target_slot", None) is not None and int(self._active_target_slot) == slot:
+                stream_endpoint = str(getattr(self, "_active_stream_endpoint", "") or "")
+        except Exception:
+            stream_endpoint = ""
 
-        ok, port, rtmp_port = self._valid_ip_port(ip, port_text, rtmp_text)
+        ok, port, stream_proto, stream_port, stream_endpoint = self._valid_ip_port(ip, port_text, stream_proto, stream_text, stream_endpoint)
         if not ok:
             return
 
         ip = ip.strip()
         new_entry = {"ip": ip, "port": int(port)}
-        if rtmp_port is not None:
-            new_entry["rtmp_port"] = int(rtmp_port)
+        camera_status_profile = ""
+        try:
+            if getattr(self, "_active_target_slot", None) is not None and int(self._active_target_slot) == slot:
+                camera_status_profile = str(getattr(self, "_active_camera_status_profile", "") or "").strip()
+            else:
+                camera_status_profile = str(getattr(self, "_targets", {}).get(slot, {}).get("camera_status_profile", "") or "").strip()
+        except Exception:
+            camera_status_profile = ""
+        if stream_endpoint:
+            new_entry["stream_endpoint"] = stream_endpoint.strip()
+        if stream_port is not None:
+            new_entry["stream_protocol"] = stream_proto
+            new_entry["stream_port"] = int(stream_port)
+        if camera_status_profile:
+            new_entry["camera_status_profile"] = camera_status_profile
 
         is_create = (
             (slot not in self._targets)
@@ -3273,8 +3854,10 @@ class MainWindow(QMainWindow):
 
         if is_create:
             msg = f"{ip}:{port}"
-            if new_entry.get("rtmp_port") is not None:
-                msg += f" | RTMP {int(new_entry.get('rtmp_port'))}"
+            if new_entry.get("stream_endpoint"):
+                msg += f" | {stream_proto} {str(new_entry.get('stream_endpoint'))}"
+            elif new_entry.get("stream_port") is not None:
+                msg += f" | {stream_proto} {int(new_entry.get('stream_port'))}"
             self.add_log(f"Saved target #{slot}: {msg}")
             # New target becomes active immediately; hide editor state
             self._new_target_slot = None
@@ -3282,8 +3865,10 @@ class MainWindow(QMainWindow):
             self._apply_target_slot(int(slot))
         else:
             msg = f"{ip}:{port}"
-            if new_entry.get("rtmp_port") is not None:
-                msg += f" | RTMP {int(new_entry.get('rtmp_port'))}"
+            if new_entry.get("stream_endpoint"):
+                msg += f" | {stream_proto} {str(new_entry.get('stream_endpoint'))}"
+            elif new_entry.get("stream_port") is not None:
+                msg += f" | {stream_proto} {int(new_entry.get('stream_port'))}"
             self.add_log(f"Updated target #{slot}: {msg}")
             # Keep camera selection in sync if editing active slot
             if getattr(self, "_active_target_slot", None) is not None and int(self._active_target_slot) == slot:
@@ -3349,16 +3934,23 @@ class MainWindow(QMainWindow):
 
         ip = str(entry.get("ip", "")).strip()
         port = int(entry.get("port", 0))
-        rtmp_port = entry.get("rtmp_port", None)
+        stream_protocol = str(entry.get("stream_protocol", "RTMP")).strip().upper()
+        if stream_protocol not in ("RTMP", "RTSP"):
+            stream_protocol = "RTMP"
+        stream_port = entry.get("stream_port", entry.get("rtmp_port", None))
+        stream_endpoint = str(entry.get("stream_endpoint", "")).strip()
+        camera_status_profile = str(entry.get("camera_status_profile", "")).strip()
 
         self.ip_edit.setText(ip)
         self.port_edit.setText(str(port))
-        # Keep RTMP port available for future features
-        self._active_rtmp_port = rtmp_port
-        # Update RTMP viewer tab (if present)
+        self._active_stream_protocol = stream_protocol
+        self._active_stream_port = stream_port
+        self._active_stream_endpoint = stream_endpoint
+        self._active_camera_status_profile = camera_status_profile or None
+        # Update Stream viewer tab (if present)
         try:
-            if hasattr(self, "rtmp_viewer") and self.rtmp_viewer is not None:
-                self.rtmp_viewer.set_target(ip, rtmp_port)
+            if hasattr(self, "stream_viewer") and self.stream_viewer is not None:
+                self.stream_viewer.set_target(ip, stream_protocol, stream_port, stream_endpoint)
         except Exception:
             pass
 
@@ -3367,9 +3959,11 @@ class MainWindow(QMainWindow):
         self._cam_port = None
 
         msg = f"{ip}:{port}"
-        if rtmp_port is not None:
+        if stream_endpoint:
+            msg += f" | {stream_protocol} {stream_endpoint}"
+        elif stream_port is not None:
             try:
-                msg += f" | RTMP {int(rtmp_port)}"
+                msg += f" | {stream_protocol} {int(stream_port)}"
             except Exception:
                 pass
         self.add_log(f"Selected target #{slot}: {msg}")
@@ -3378,6 +3972,13 @@ class MainWindow(QMainWindow):
         try:
             if hasattr(self, "target_boxes"):
                 self._set_selected_target_ui(int(slot), flash=True)
+        except Exception:
+            pass
+        try:
+            self._apply_camera_status_profile_name_to_ui(camera_status_profile)
+            if camera_status_profile:
+                self._apply_camera_status_profile_by_name(camera_status_profile, auto_refresh=False)
+            self._queue_camera_status_refresh(100)
         except Exception:
             pass
 
@@ -3422,25 +4023,37 @@ class MainWindow(QMainWindow):
                 ip = str(entry.get("ip", "")).strip()
                 port = int(entry.get("port", 0))
 
-                rtmp_port = entry.get("rtmp_port", None)
+                stream_protocol = str(entry.get("stream_protocol", "RTMP")).strip().upper()
+                if stream_protocol not in ("RTMP", "RTSP"):
+                    stream_protocol = "RTMP"
+                stream_port = entry.get("stream_port", entry.get("rtmp_port", None))
+                stream_endpoint = str(entry.get("stream_endpoint", "")).strip()
 
                 # Do not clobber while user is typing in this slot
-                rtmp_has_focus = False
+                stream_port_has_focus = False
                 try:
-                    rtmp_has_focus = bool(w.get("rtmp") is not None and w["rtmp"].hasFocus())
+                    stream_port_has_focus = bool(w.get("stream_port") is not None and w["stream_port"].hasFocus())
                 except Exception:
-                    rtmp_has_focus = False
+                    stream_port_has_focus = False
 
-                if not w["ip"].hasFocus() and not w["port"].hasFocus() and not rtmp_has_focus:
+                if not w["ip"].hasFocus() and not w["port"].hasFocus() and not stream_port_has_focus:
                     w["ip"].setText(ip)
                     w["port"].setText(str(port))
                     try:
-                        if w.get("rtmp") is not None:
-                            w["rtmp"].setText("" if rtmp_port is None else str(int(rtmp_port)))
+                        if w.get("stream_proto") is not None:
+                            idx = w["stream_proto"].findData(stream_protocol)
+                            w["stream_proto"].setCurrentIndex(max(0, idx))
+                        if w.get("stream_port") is not None:
+                            w["stream_port"].setText("" if stream_port is None else str(int(stream_port)))
                     except Exception:
                         pass
 
-                title = f"Target #{slot}   {ip}:{port}" + (f" | RTMP {int(rtmp_port)}" if rtmp_port is not None else "")
+                extra = ""
+                if stream_endpoint:
+                    extra = f" | {stream_protocol} {stream_endpoint}"
+                elif stream_port is not None:
+                    extra = f" | {stream_protocol} {int(stream_port)}"
+                title = f"Target #{slot}   {ip}:{port}{extra}"
 
             # Also show the unsaved "new target" editor slot (opened via +)
             elif (new_slot is not None) and slot == int(new_slot) and slot not in self._targets:
@@ -3491,8 +4104,10 @@ class MainWindow(QMainWindow):
             w["ip"].setText("")
             w["port"].setText("")
             try:
-                if w.get("rtmp") is not None:
-                    w["rtmp"].setText("")
+                if w.get("stream_proto") is not None:
+                    w["stream_proto"].setCurrentIndex(0)
+                if w.get("stream_port") is not None:
+                    w["stream_port"].setText("")
             except Exception:
                 pass
         self._refresh_targets_ui()
@@ -3550,9 +4165,14 @@ class MainWindow(QMainWindow):
                 if not v:
                     continue
                 detail = f" ({v['ip']}:{int(v['port'])})"
-                if v.get('rtmp_port') is not None:
+                stream_port = v.get("stream_port", v.get("rtmp_port"))
+                stream_protocol = str(v.get("stream_protocol", "RTMP")).strip().upper()
+                stream_endpoint = str(v.get("stream_endpoint", "")).strip()
+                if stream_endpoint:
+                    detail += f" | {stream_protocol} {stream_endpoint}"
+                elif stream_port is not None:
                     try:
-                        detail += f" | RTMP {int(v['rtmp_port'])}"
+                        detail += f" | {stream_protocol} {int(stream_port)}"
                     except Exception:
                         pass
                 cb.addItem(f"Switch Target #{slot}{detail}", ("target", slot))
@@ -3975,6 +4595,88 @@ class MainWindow(QMainWindow):
         yy = self._clamp_u8(tilt_dir)
         return f"06 01 {vv:02X} {ww:02X} {xx:02X} {yy:02X}"
 
+    @staticmethod
+    def _encode_visca_signed_16(value: int) -> str:
+        raw = int(value).to_bytes(2, "big", signed=True).hex()
+        return " ".join(f"0{ch.upper()}" for ch in raw)
+
+    def _build_pan_tilt_position_payload(
+        self,
+        pan_speed: int,
+        tilt_speed: int,
+        pan_position: int,
+        tilt_position: int,
+        relative: bool,
+    ) -> str:
+        cmd = "03" if relative else "02"
+        vv = self._clamp_u8(pan_speed)
+        ww = self._clamp_u8(tilt_speed)
+        phex = self._encode_visca_signed_16(pan_position)
+        thex = self._encode_visca_signed_16(tilt_position)
+        return f"06 {cmd} {vv:02X} {ww:02X} {phex} {thex}"
+
+    def _update_pt_mode_indicators(self):
+        rel_enabled = bool(getattr(self, "_pt_axis_mode_relative_enabled", False))
+        abs_enabled = bool(getattr(self, "_pt_axis_mode_absolute_enabled", False))
+        try:
+            text = ""
+            if rel_enabled:
+                text = "REL"
+            elif abs_enabled:
+                text = "ABS"
+            enabled = bool(text)
+            self.status_panel.pt_mode_indicator.setText(text)
+            self.status_panel.pt_mode_indicator.setStyleSheet(
+                "QToolButton { background: %s; color: %s; border: 2px solid %s; border-radius: 17px; font-size: 8pt; font-weight: bold; padding: 0; }"
+                % (
+                    "rgb(70,170,90)" if enabled else "rgb(185,70,70)",
+                    "rgb(20,20,20)" if enabled else "rgb(255,245,245)",
+                    "rgb(30,90,40)" if enabled else "rgb(110,35,35)",
+                )
+            )
+        except Exception:
+            pass
+
+    def _set_pt_axis_modes(self, *, relative_enabled: bool | None = None, absolute_enabled: bool | None = None, announce: bool = True):
+        if relative_enabled is not None:
+            self._pt_axis_mode_relative_enabled = bool(relative_enabled)
+            if self._pt_axis_mode_relative_enabled:
+                self._pt_axis_mode_absolute_enabled = False
+        if absolute_enabled is not None:
+            self._pt_axis_mode_absolute_enabled = bool(absolute_enabled)
+            if self._pt_axis_mode_absolute_enabled:
+                self._pt_axis_mode_relative_enabled = False
+        self._update_pt_mode_indicators()
+        try:
+            self._pt_intent = {}
+            if getattr(self, "_active_target_slot", None) is not None:
+                self.send_payload("06 01 00 00 03 03", False, label="[PT Stop]")
+        except Exception:
+            pass
+        if announce:
+            mode = "Normal"
+            if bool(getattr(self, "_pt_axis_mode_relative_enabled", False)):
+                mode = "Relative"
+            elif bool(getattr(self, "_pt_axis_mode_absolute_enabled", False)):
+                mode = "Absolute"
+            self.add_log(f"Pan/Tilt axis mode: {mode}")
+
+    def _toggle_pt_relative_mode(self):
+        current = bool(getattr(self, "_pt_axis_mode_relative_enabled", False))
+        self._set_pt_axis_modes(relative_enabled=not current)
+
+    def _toggle_pt_absolute_mode(self):
+        current = bool(getattr(self, "_pt_axis_mode_absolute_enabled", False))
+        self._set_pt_axis_modes(absolute_enabled=not current)
+
+    def _cycle_pt_mode_indicator_action(self):
+        if bool(getattr(self, "_pt_axis_mode_relative_enabled", False)):
+            self._set_pt_axis_modes(relative_enabled=False)
+        elif bool(getattr(self, "_pt_axis_mode_absolute_enabled", False)):
+            self._set_pt_axis_modes(absolute_enabled=False)
+        else:
+            self._toggle_pt_relative_mode()
+
     def _build_zoom_payload(self, signed_speed: int) -> str:
         """VISCA Zoom body (no header/terminator).
 
@@ -4054,24 +4756,82 @@ class MainWindow(QMainWindow):
         # For tilt: + => up (0x01), - => down (0x02)
         tilt_dir, tilt_speed = self._signed_speed_and_dir(tilt_shaped, tilt_spd, pos_dir=0x01, neg_dir=0x02, stop_dir=0x03)
 
-        # Send Pan/Tilt only when any component changes.
+        # Send Pan/Tilt only when intent changes.
         try:
             last = getattr(self, '_pt_intent', None) or {}
-            changed = (
-                int(last.get('pan_speed', -1)) != int(pan_speed)
-                or int(last.get('tilt_speed', -1)) != int(tilt_speed)
-                or int(last.get('pan_dir', -1)) != int(pan_dir)
-                or int(last.get('tilt_dir', -1)) != int(tilt_dir)
-            )
-            if changed:
-                payload = self._build_pan_tilt_payload(pan_speed, tilt_speed, pan_dir, tilt_dir)
-                self.send_payload(payload, False, label="[PT]")
-                self._pt_intent = {
-                    "pan_speed": int(pan_speed),
-                    "tilt_speed": int(tilt_speed),
-                    "pan_dir": int(pan_dir),
-                    "tilt_dir": int(tilt_dir),
-                }
+            if bool(getattr(self, "_pt_axis_mode_relative_enabled", False)):
+                pan_delta = int(round(float(pan_shaped) * float(self._pt_rel_pan_step)))
+                tilt_delta = int(round(float(tilt_shaped) * float(self._pt_rel_tilt_step)))
+                active = abs(float(pan_shaped)) > 1e-9 or abs(float(tilt_shaped)) > 1e-9
+                changed = (
+                    str(last.get("mode", "")) != "relative"
+                    or int(last.get("pan_delta", 0)) != int(pan_delta)
+                    or int(last.get("tilt_delta", 0)) != int(tilt_delta)
+                    or int(last.get("pan_speed", -1)) != int(pan_speed)
+                    or int(last.get("tilt_speed", -1)) != int(tilt_speed)
+                )
+                if active and changed:
+                    payload = self._build_pan_tilt_position_payload(
+                        pan_speed=max(1, int(pan_speed)),
+                        tilt_speed=max(1, int(tilt_speed)),
+                        pan_position=int(pan_delta),
+                        tilt_position=int(tilt_delta),
+                        relative=True,
+                    )
+                    self.send_payload(payload, False, label="[PT Relative]")
+                    self._pt_intent = {
+                        "mode": "relative",
+                        "pan_delta": int(pan_delta),
+                        "tilt_delta": int(tilt_delta),
+                        "pan_speed": int(pan_speed),
+                        "tilt_speed": int(tilt_speed),
+                    }
+                elif not active:
+                    self._pt_intent = {"mode": "relative", "pan_delta": 0, "tilt_delta": 0, "pan_speed": 0, "tilt_speed": 0}
+            elif bool(getattr(self, "_pt_axis_mode_absolute_enabled", False)):
+                pan_pos = int(round(float(pan_shaped) * float(self._pt_abs_pan_limit)))
+                tilt_pos = int(round(float(tilt_shaped) * float(self._pt_abs_tilt_limit)))
+                changed = (
+                    str(last.get("mode", "")) != "absolute"
+                    or int(last.get("pan_pos", 999999)) != int(pan_pos)
+                    or int(last.get("tilt_pos", 999999)) != int(tilt_pos)
+                    or int(last.get("pan_speed", -1)) != int(pan_speed)
+                    or int(last.get("tilt_speed", -1)) != int(tilt_speed)
+                )
+                if changed:
+                    payload = self._build_pan_tilt_position_payload(
+                        pan_speed=max(1, int(pan_speed)),
+                        tilt_speed=max(1, int(tilt_speed)),
+                        pan_position=int(pan_pos),
+                        tilt_position=int(tilt_pos),
+                        relative=False,
+                    )
+                    self.send_payload(payload, False, label="[PT Absolute]")
+                    self._pt_intent = {
+                        "mode": "absolute",
+                        "pan_pos": int(pan_pos),
+                        "tilt_pos": int(tilt_pos),
+                        "pan_speed": int(pan_speed),
+                        "tilt_speed": int(tilt_speed),
+                    }
+            else:
+                changed = (
+                    str(last.get("mode", "")) != "drive"
+                    or int(last.get('pan_speed', -1)) != int(pan_speed)
+                    or int(last.get('tilt_speed', -1)) != int(tilt_speed)
+                    or int(last.get('pan_dir', -1)) != int(pan_dir)
+                    or int(last.get('tilt_dir', -1)) != int(tilt_dir)
+                )
+                if changed:
+                    payload = self._build_pan_tilt_payload(pan_speed, tilt_speed, pan_dir, tilt_dir)
+                    self.send_payload(payload, False, label="[PT]")
+                    self._pt_intent = {
+                        "mode": "drive",
+                        "pan_speed": int(pan_speed),
+                        "tilt_speed": int(tilt_speed),
+                        "pan_dir": int(pan_dir),
+                        "tilt_dir": int(tilt_dir),
+                    }
         except Exception:
             pass
 
@@ -4363,6 +5123,10 @@ class MainWindow(QMainWindow):
             by_label[key] = len(out)
             out.append((key, str(payload), bool(is_query)))
 
+        for key in ("Toggle PT Relative", "Toggle PT Absolute"):
+            by_label[key] = len(out)
+            out.append((key, f"__ACTION__:{key.lower().replace(' ', '_')}", False))
+
         for lbl, (payload, is_query) in (self.user_commands or {}).items():
             key = str(lbl)
             item = (key, str(payload), bool(is_query))
@@ -4399,6 +5163,17 @@ class MainWindow(QMainWindow):
     # Sending logic
     # -----------------------------
     def send_payload(self, payload: str, is_query: bool, label: str = "", _force: bool = False):
+        try:
+            action = str(payload or "").strip()
+            if action.startswith("__ACTION__:"):
+                if action == "__ACTION__:toggle_pt_relative":
+                    self._toggle_pt_relative_mode()
+                    return
+                if action == "__ACTION__:toggle_pt_absolute":
+                    self._toggle_pt_absolute_mode()
+                    return
+        except Exception:
+            pass
         try:
             ip, port = self.parse_ip_port()
         except ValueError as e:
@@ -4645,18 +5420,81 @@ class MainWindow(QMainWindow):
                 self.status_panel.set_af_sensitivity(None)
             return
 
-    def refresh_camera_status(self):
+        # 5) CAM_WBModeInq (04 35)
+        # Response: 90 50 pp FF
+        if payload_norm == "0435":
+            v = resp[2] if len(resp) > 2 else None
+            self.status_panel.set_wb_mode(v)
+            return
+
+        # 6) CAM_GainLimitInq (04 2C)
+        # Response: 90 50 0q FF
+        if payload_norm == "042c":
+            v = self._nibble(resp[2]) if len(resp) > 2 else None
+            self.status_panel.set_gain_limit(v)
+            return
+
+        # 7) CAM_BrightnessInq (04 A1)
+        # Response: 90 50 00 00 0p 0q FF
+        if payload_norm == "04a1":
+            v = self._parse_u8_from_nibbles(resp, 4)
+            self.status_panel.set_brightness(v)
+            return
+
+        # 8) CAM_ContrastInq (04 A2)
+        # Response: 90 50 00 00 0p 0q FF
+        if payload_norm == "04a2":
+            v = self._parse_u8_from_nibbles(resp, 4)
+            self.status_panel.set_contrast(v)
+            return
+
+        # 9) CAM_BrightPosInq (04 4D)
+        # Response: 90 50 0p 0q FF
+        if payload_norm == "044d":
+            v = self._parse_u8_from_nibbles(resp, 2)
+            self.status_panel.set_luminance(v)
+            return
+
+        # 10) CAM_ExpCompPosInq (04 4E)
+        # Response: 90 50 00 00 0p 0q FF
+        if payload_norm == "044e":
+            v = self._parse_u8_from_nibbles(resp, 4)
+            self.status_panel.set_exp_comp(v)
+            return
+
+        # 11) CAM_ColorTempInq (04 20)
+        # Response: 90 50 pq FF
+        if payload_norm == "0420":
+            v = self._parse_u8_from_nibbles(resp, 2)
+            self.status_panel.set_color_temp(v)
+            return
+
+        # 12) CAM_ColorHueInq (04 4F)
+        # Response: 90 50 00 00 00 0p FF
+        if payload_norm == "044f":
+            v = self._nibble(resp[5]) if len(resp) > 5 else None
+            self.status_panel.set_color_hue(v)
+            return
+
+    def _camera_status_refresh_tick(self):
+        self.refresh_camera_status(silent=True)
+
+    def refresh_camera_status(self, silent: bool = False):
         """Send inquiry commands for the status panel (uses current selected target)."""
+        if getattr(self, "_active_target_slot", None) is None:
+            return
         try:
             ip, port = self.parse_ip_port()
         except Exception as e:
-            self.add_log(f"ERROR: {e}")
+            if not silent:
+                self.add_log(f"ERROR: {e}")
             return
 
         try:
             cam = self.get_camera(ip, port)
         except Exception as e:
-            self.add_log(f"ERROR: {type(e).__name__}: {e}")
+            if not silent:
+                self.add_log(f"ERROR: {type(e).__name__}: {e}")
             return
 
         inquiries = [
@@ -4664,22 +5502,224 @@ class MainWindow(QMainWindow):
             ("7E 7E 01", "[CameraBlockInq]"),
             ("04 33", "[BacklightModeInq]"),
             ("04 58", "[AFSensitivityInq]"),
+            ("04 35", "[WBModeInq]"),
+            ("04 2C", "[GainLimitInq]"),
+            ("04 A1", "[BrightnessInq]"),
+            ("04 A2", "[ContrastInq]"),
+            ("04 4D", "[BrightPosInq]"),
+            ("04 4E", "[ExpCompPosInq]"),
+            ("04 20", "[ColorTempInq]"),
+            ("04 4F", "[ColorHueInq]"),
         ]
 
         for payload, tag in inquiries:
             try:
                 resp = cam._send_command(payload, query=True)
                 if resp is None:
-                    self.add_log(f"QUERY {tag}: {payload} | response: <None>")
+                    if not silent:
+                        self.add_log(f"QUERY {tag}: {payload} | response: <None>")
                 else:
-                    self.add_log(f"QUERY {tag}: {payload} | response: {resp.hex(' ')}")
+                    if not silent:
+                        self.add_log(f"QUERY {tag}: {payload} | response: {resp.hex(' ')}")
                     self._handle_inquiry_response(payload, resp)
             except NoQueryResponse as e:
-                self.add_log(f"ERROR: No query response {tag}: {e}")
+                if not silent:
+                    self.add_log(f"ERROR: No query response {tag}: {e}")
             except ViscaException as e:
-                self.add_log(f"ERROR: VISCA error {tag} (0x{e.status_code:02X}) {e.description}")
+                if not silent:
+                    self.add_log(f"ERROR: VISCA error {tag} (0x{e.status_code:02X}) {e.description}")
             except Exception as e:
-                self.add_log(f"ERROR: {type(e).__name__}: {e}")
+                if not silent:
+                    self.add_log(f"ERROR: {type(e).__name__}: {e}")
+
+    def _on_exposure_mode_selected(self, idx: int):
+        try:
+            if not hasattr(self, "status_panel") or self.status_panel is None:
+                return
+            data = self.status_panel.exposure_mode_combo.itemData(int(idx))
+            if data is None:
+                return
+            if not (isinstance(data, (list, tuple)) and len(data) == 2):
+                return
+            payload, _ae_code = data
+            self.send_payload(str(payload), is_query=False, label="[Exposure Mode]")
+        except Exception as e:
+            self.add_log(f"ERROR: Failed to set exposure mode: {type(e).__name__}: {e}")
+
+    def _on_wb_mode_selected(self, idx: int):
+        try:
+            if not hasattr(self, "status_panel") or self.status_panel is None:
+                return
+            data = self.status_panel.wb_mode_combo.itemData(int(idx))
+            if data is None:
+                return
+            if not (isinstance(data, (list, tuple)) and len(data) == 2):
+                return
+            payload, _wb_code = data
+            self.send_payload(str(payload), is_query=False, label="[WB Mode]")
+        except Exception as e:
+            self.add_log(f"ERROR: Failed to set white balance mode: {type(e).__name__}: {e}")
+
+    def _queue_camera_status_refresh(self, delay_ms: int = 200):
+        try:
+            QTimer.singleShot(int(delay_ms), self.refresh_camera_status)
+        except Exception:
+            pass
+
+    def _on_gain_limit_reset_clicked(self):
+        try:
+            self.send_payload("04 0C 00", is_query=False, label="[Gain Reset]")
+            self._queue_camera_status_refresh()
+        except Exception as e:
+            self.add_log(f"ERROR: Failed to reset gain limit: {type(e).__name__}: {e}")
+
+    def _on_gain_limit_set_clicked(self):
+        try:
+            if not hasattr(self, "status_panel") or self.status_panel is None:
+                return
+            value = int(self.status_panel.gain_limit_spin.value()) & 0x0F
+            self.send_payload(f"04 2C 0{value:X}", is_query=False, label="[Gain Limit]")
+            self._queue_camera_status_refresh()
+        except Exception as e:
+            self.add_log(f"ERROR: Failed to set gain limit: {type(e).__name__}: {e}")
+
+    def _on_brightness_set_clicked(self):
+        try:
+            if not hasattr(self, "status_panel") or self.status_panel is None:
+                return
+            value = int(self.status_panel.brightness_spin.value()) & 0xFF
+            hi = (value >> 4) & 0x0F
+            lo = value & 0x0F
+            self.send_payload(f"04 A1 00 00 0{hi:X} 0{lo:X}", is_query=False, label="[Brightness]")
+            self._queue_camera_status_refresh()
+        except Exception as e:
+            self.add_log(f"ERROR: Failed to set brightness: {type(e).__name__}: {e}")
+
+    def _on_luminance_set_clicked(self):
+        try:
+            if not hasattr(self, "status_panel") or self.status_panel is None:
+                return
+            value = int(self.status_panel.luminance_spin.value()) & 0xFF
+            hi = (value >> 4) & 0x0F
+            lo = value & 0x0F
+            self.send_payload(f"04 A1 00 00 0{hi:X} 0{lo:X}", is_query=False, label="[Luminance]")
+            self._queue_camera_status_refresh()
+        except Exception as e:
+            self.add_log(f"ERROR: Failed to set luminance: {type(e).__name__}: {e}")
+
+    def _on_contrast_set_clicked(self):
+        try:
+            if not hasattr(self, "status_panel") or self.status_panel is None:
+                return
+            value = int(self.status_panel.contrast_spin.value()) & 0xFF
+            hi = (value >> 4) & 0x0F
+            lo = value & 0x0F
+            self.send_payload(f"04 A2 00 00 0{hi:X} 0{lo:X}", is_query=False, label="[Contrast]")
+            self._queue_camera_status_refresh()
+        except Exception as e:
+            self.add_log(f"ERROR: Failed to set contrast: {type(e).__name__}: {e}")
+
+    def _on_exp_comp_reset_clicked(self):
+        try:
+            self.send_payload("04 0E 00", is_query=False, label="[Exposure Comp Reset]")
+            self._queue_camera_status_refresh()
+        except Exception as e:
+            self.add_log(f"ERROR: Failed to reset exposure compensation: {type(e).__name__}: {e}")
+
+    def _on_exp_comp_set_clicked(self):
+        try:
+            if not hasattr(self, "status_panel") or self.status_panel is None:
+                return
+            value = int(self.status_panel.exp_comp_spin.value()) & 0xFF
+            hi = (value >> 4) & 0x0F
+            lo = value & 0x0F
+            self.send_payload(f"04 4E 00 00 0{hi:X} 0{lo:X}", is_query=False, label="[Exposure Comp]")
+            self._queue_camera_status_refresh()
+        except Exception as e:
+            self.add_log(f"ERROR: Failed to set exposure compensation: {type(e).__name__}: {e}")
+
+    def _on_color_temp_reset_clicked(self):
+        try:
+            self.send_payload("04 20 00", is_query=False, label="[Color Temp Reset]")
+            self._queue_camera_status_refresh()
+        except Exception as e:
+            self.add_log(f"ERROR: Failed to reset color temperature: {type(e).__name__}: {e}")
+
+    def _on_color_temp_set_clicked(self):
+        try:
+            if not hasattr(self, "status_panel") or self.status_panel is None:
+                return
+            value = int(self.status_panel.color_temp_spin.value()) & 0xFF
+            hi = (value >> 4) & 0x0F
+            lo = value & 0x0F
+            self.send_payload(f"04 20 0{hi:X} 0{lo:X}", is_query=False, label="[Color Temp]")
+            self._queue_camera_status_refresh()
+        except Exception as e:
+            self.add_log(f"ERROR: Failed to set color temperature: {type(e).__name__}: {e}")
+
+    def _send_color_hue_value(self, value: int):
+        try:
+            value = max(0x00, min(0x0E, int(value)))
+            self.send_payload(f"04 4F 00 00 00 0{value:X}", is_query=False, label="[Color Hue]")
+            self._queue_camera_status_refresh()
+        except Exception as e:
+            self.add_log(f"ERROR: Failed to set color hue: {type(e).__name__}: {e}")
+
+    def _step_color_hue(self, delta: int):
+        try:
+            if not hasattr(self, "status_panel") or self.status_panel is None:
+                return
+            current = getattr(self.status_panel, "_color_hue_current", None)
+            if current is None:
+                self.refresh_camera_status()
+                return
+            self._send_color_hue_value(int(current) + int(delta))
+        except Exception as e:
+            self.add_log(f"ERROR: Failed to adjust color hue: {type(e).__name__}: {e}")
+
+    def _send_r_gain_value(self, value: int):
+        try:
+            value = max(0x00, min(0xFF, int(value)))
+            hi = (value >> 4) & 0x0F
+            lo = value & 0x0F
+            self.send_payload(f"04 43 00 00 0{hi:X} 0{lo:X}", is_query=False, label="[R Gain]")
+            self._queue_camera_status_refresh()
+        except Exception as e:
+            self.add_log(f"ERROR: Failed to set R gain: {type(e).__name__}: {e}")
+
+    def _step_r_gain(self, delta: int):
+        try:
+            if not hasattr(self, "status_panel") or self.status_panel is None:
+                return
+            current = getattr(self.status_panel, "_r_gain_current", None)
+            if current is None:
+                self.refresh_camera_status()
+                return
+            self._send_r_gain_value(int(current) + int(delta))
+        except Exception as e:
+            self.add_log(f"ERROR: Failed to adjust R gain: {type(e).__name__}: {e}")
+
+    def _send_b_gain_value(self, value: int):
+        try:
+            value = max(0x00, min(0xFF, int(value)))
+            hi = (value >> 4) & 0x0F
+            lo = value & 0x0F
+            self.send_payload(f"04 44 00 00 0{hi:X} 0{lo:X}", is_query=False, label="[B Gain]")
+            self._queue_camera_status_refresh()
+        except Exception as e:
+            self.add_log(f"ERROR: Failed to set B gain: {type(e).__name__}: {e}")
+
+    def _step_b_gain(self, delta: int):
+        try:
+            if not hasattr(self, "status_panel") or self.status_panel is None:
+                return
+            current = getattr(self.status_panel, "_b_gain_current", None)
+            if current is None:
+                self.refresh_camera_status()
+                return
+            self._send_b_gain_value(int(current) + int(delta))
+        except Exception as e:
+            self.add_log(f"ERROR: Failed to adjust B gain: {type(e).__name__}: {e}")
 
     def send_current(self):
         try:
@@ -4729,6 +5769,280 @@ class MainWindow(QMainWindow):
         if not safe.lower().endswith(".json"):
             safe += ".json"
         return os.path.join(self._profiles_dir, safe)
+
+    def _camera_status_profile_path(self, name: str) -> str:
+        safe = "".join(ch for ch in (name or "").strip() if ch.isalnum() or ch in (" ", "_", "-", ".")).strip()
+        safe = safe.replace(" ", "_")
+        if not safe:
+            safe = "default"
+        if not safe.lower().endswith(".json"):
+            safe += ".json"
+        return os.path.join(self._camera_status_profiles_dir, safe)
+
+    def _refresh_camera_status_profile_list(self) -> None:
+        try:
+            existing = set()
+            if os.path.isdir(self._camera_status_profiles_dir):
+                for fn in os.listdir(self._camera_status_profiles_dir):
+                    if fn.lower().endswith(".json"):
+                        existing.add(os.path.splitext(fn)[0])
+            items = sorted({e for e in existing if e}, key=lambda s: s.lower())
+            cur_text = self.status_panel.status_profile_combo.currentText().strip() if hasattr(self, "status_panel") else ""
+            self.status_panel.status_profile_combo.blockSignals(True)
+            self.status_panel.status_profile_combo.clear()
+            for it in items:
+                self.status_panel.status_profile_combo.addItem(it, it)
+            if cur_text:
+                self.status_panel.status_profile_combo.setEditText(cur_text)
+            self.status_panel.status_profile_combo.blockSignals(False)
+        except Exception:
+            try:
+                self.status_panel.status_profile_combo.blockSignals(False)
+            except Exception:
+                pass
+
+    def _collect_camera_status_state(self) -> dict[str, object]:
+        state: dict[str, object] = {"version": 1, "saved_at": _time.strftime("%Y-%m-%d %H:%M:%S")}
+        try:
+            idx = int(self.status_panel.exposure_mode_combo.currentIndex())
+            data = self.status_panel.exposure_mode_combo.itemData(idx)
+            if isinstance(data, (list, tuple)) and len(data) == 2:
+                state["exposure_mode"] = int(data[1])
+        except Exception:
+            pass
+        try:
+            idx = int(self.status_panel.wb_mode_combo.currentIndex())
+            data = self.status_panel.wb_mode_combo.itemData(idx)
+            if isinstance(data, (list, tuple)) and len(data) == 2:
+                state["wb_mode"] = int(data[1])
+        except Exception:
+            pass
+        for key, attr in (
+            ("gain_limit", "gain_limit_spin"),
+            ("brightness", "brightness_spin"),
+            ("luminance", "luminance_spin"),
+            ("contrast", "contrast_spin"),
+            ("exp_comp", "exp_comp_spin"),
+            ("color_temp", "color_temp_spin"),
+        ):
+            try:
+                state[key] = int(getattr(self.status_panel, attr).value())
+            except Exception:
+                pass
+        for key, attr in (
+            ("color_hue", "_color_hue_current"),
+            ("r_gain", "_r_gain_current"),
+            ("b_gain", "_b_gain_current"),
+        ):
+            try:
+                v = getattr(self.status_panel, attr)
+                if v is not None:
+                    state[key] = int(v)
+            except Exception:
+                pass
+        return state
+
+    def _load_camera_status_profile_file(self, name: str) -> dict[str, object] | None:
+        try:
+            p = self._camera_status_profile_path(name)
+            if os.path.exists(p):
+                with open(p, "r", encoding="utf-8") as f:
+                    raw = json.load(f) or {}
+                if isinstance(raw, dict):
+                    return raw
+        except Exception as e:
+            self.add_log(f"ERROR: Failed to load camera status profile '{name}': {e}")
+        return None
+
+    def _save_camera_status_profile_file(self, name: str, state: dict[str, object]) -> bool:
+        try:
+            p = self._camera_status_profile_path(name)
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(state or {}, f, indent=2)
+            return True
+        except Exception as e:
+            self.add_log(f"ERROR: Failed to save camera status profile '{name}': {e}")
+            return False
+
+    def _set_active_target_camera_status_profile(self, name: str | None) -> None:
+        slot = getattr(self, "_active_target_slot", None)
+        self._active_camera_status_profile = str(name).strip() if name else None
+        if slot is None:
+            return
+        try:
+            slot_i = int(slot)
+        except Exception:
+            return
+        entry = getattr(self, "_targets", {}).get(slot_i)
+        if not isinstance(entry, dict):
+            return
+        cur = str(entry.get("camera_status_profile", "") or "").strip()
+        nxt = self._active_camera_status_profile or ""
+        if cur == nxt:
+            return
+        if nxt:
+            entry["camera_status_profile"] = nxt
+        else:
+            entry.pop("camera_status_profile", None)
+        self._targets[slot_i] = entry
+        self._save_targets()
+
+    def _apply_camera_status_profile_name_to_ui(self, name: str | None) -> None:
+        try:
+            self.status_panel.status_profile_combo.blockSignals(True)
+            self.status_panel.status_profile_combo.setEditText(str(name or "").strip())
+        except Exception:
+            pass
+        finally:
+            try:
+                self.status_panel.status_profile_combo.blockSignals(False)
+            except Exception:
+                pass
+
+    def _send_exposure_mode_code(self, ae_code: int) -> None:
+        for _label, payload, code in CameraStatusPanel.EXPOSURE_MODES:
+            if int(code) == int(ae_code):
+                self.send_payload(str(payload), is_query=False, label="[Exposure Mode]")
+                return
+
+    def _send_wb_mode_code(self, wb_code: int) -> None:
+        for _label, payload, code in CameraStatusPanel.WB_MODES:
+            if int(code) == int(wb_code):
+                self.send_payload(str(payload), is_query=False, label="[WB Mode]")
+                return
+
+    def _apply_camera_status_state(self, state: dict[str, object], refresh_after: bool = True) -> None:
+        if not isinstance(state, dict):
+            return
+        try:
+            if "exposure_mode" in state:
+                self.status_panel.set_exposure_mode(int(state.get("exposure_mode")))
+                self._send_exposure_mode_code(int(state.get("exposure_mode")))
+        except Exception:
+            pass
+        try:
+            if "wb_mode" in state:
+                self.status_panel.set_wb_mode(int(state.get("wb_mode")))
+                self._send_wb_mode_code(int(state.get("wb_mode")))
+        except Exception:
+            pass
+        try:
+            if "gain_limit" in state:
+                self.status_panel.set_gain_limit(int(state.get("gain_limit")))
+                self.send_payload(f"04 2C 0{int(state.get('gain_limit')) & 0x0F:X}", is_query=False, label="[Gain Limit]")
+        except Exception:
+            pass
+        try:
+            if "brightness" in state:
+                value = int(state.get("brightness")) & 0xFF
+                self.status_panel.set_brightness(value)
+                self.send_payload(f"04 A1 00 00 0{(value >> 4) & 0x0F:X} 0{value & 0x0F:X}", is_query=False, label="[Brightness]")
+        except Exception:
+            pass
+        try:
+            if "luminance" in state:
+                value = int(state.get("luminance")) & 0xFF
+                self.status_panel.set_luminance(value)
+                self.send_payload(f"04 A1 00 00 0{(value >> 4) & 0x0F:X} 0{value & 0x0F:X}", is_query=False, label="[Luminance]")
+        except Exception:
+            pass
+        try:
+            if "contrast" in state:
+                value = int(state.get("contrast")) & 0xFF
+                self.status_panel.set_contrast(value)
+                self.send_payload(f"04 A2 00 00 0{(value >> 4) & 0x0F:X} 0{value & 0x0F:X}", is_query=False, label="[Contrast]")
+        except Exception:
+            pass
+        try:
+            if "exp_comp" in state:
+                value = int(state.get("exp_comp")) & 0xFF
+                self.status_panel.set_exp_comp(value)
+                self.send_payload(f"04 4E 00 00 0{(value >> 4) & 0x0F:X} 0{value & 0x0F:X}", is_query=False, label="[Exposure Comp]")
+        except Exception:
+            pass
+        try:
+            if "color_temp" in state:
+                value = int(state.get("color_temp")) & 0xFF
+                self.status_panel.set_color_temp(value)
+                self.send_payload(f"04 20 0{(value >> 4) & 0x0F:X} 0{value & 0x0F:X}", is_query=False, label="[Color Temp]")
+        except Exception:
+            pass
+        try:
+            if "color_hue" in state:
+                value = max(0x00, min(0x0E, int(state.get("color_hue"))))
+                self.status_panel.set_color_hue(value)
+                self.send_payload(f"04 4F 00 00 00 0{value:X}", is_query=False, label="[Color Hue]")
+        except Exception:
+            pass
+        try:
+            if "r_gain" in state:
+                value = int(state.get("r_gain")) & 0xFF
+                self.status_panel.set_r_gain(value)
+                self.send_payload(f"04 43 00 00 0{(value >> 4) & 0x0F:X} 0{value & 0x0F:X}", is_query=False, label="[R Gain]")
+        except Exception:
+            pass
+        try:
+            if "b_gain" in state:
+                value = int(state.get("b_gain")) & 0xFF
+                self.status_panel.set_b_gain(value)
+                self.send_payload(f"04 44 00 00 0{(value >> 4) & 0x0F:X} 0{value & 0x0F:X}", is_query=False, label="[B Gain]")
+        except Exception:
+            pass
+        if refresh_after:
+            self._queue_camera_status_refresh(300)
+
+    def _apply_camera_status_profile_by_name(self, name: str | None, auto_refresh: bool = True) -> None:
+        prof_name = str(name or "").strip()
+        self._active_camera_status_profile = prof_name or None
+        self._apply_camera_status_profile_name_to_ui(prof_name)
+        if not prof_name:
+            if auto_refresh:
+                self._queue_camera_status_refresh(100)
+            return
+        st = self._load_camera_status_profile_file(prof_name)
+        if st is None:
+            return
+        self._apply_camera_status_state(st, refresh_after=auto_refresh)
+
+    def _on_camera_status_profile_selected(self, text: str) -> None:
+        name = str(text or "").strip()
+        self._active_camera_status_profile = name or None
+        self._set_active_target_camera_status_profile(name or None)
+
+    def _on_camera_status_profile_load_clicked(self) -> None:
+        name = str(self.status_panel.status_profile_combo.currentText() or "").strip()
+        if not name:
+            return
+        self._set_active_target_camera_status_profile(name)
+        self._apply_camera_status_profile_by_name(name)
+        self.add_log(f"Loaded camera status profile: {name}")
+
+    def _on_camera_status_profile_save_clicked(self) -> None:
+        name = str(self.status_panel.status_profile_combo.currentText() or "").strip()
+        if not name:
+            self._on_camera_status_profile_save_as_clicked()
+            return
+        st = self._collect_camera_status_state()
+        if self._save_camera_status_profile_file(name, st):
+            self._refresh_camera_status_profile_list()
+            self._apply_camera_status_profile_name_to_ui(name)
+            self._set_active_target_camera_status_profile(name)
+            self.add_log(f"Saved camera status profile: {name}")
+
+    def _on_camera_status_profile_save_as_clicked(self) -> None:
+        cur = str(self.status_panel.status_profile_combo.currentText() or "").strip()
+        name, ok = QInputDialog.getText(self, "Save camera status profile as", "Profile name:", text=cur or "default")
+        if not ok:
+            return
+        name = str(name or "").strip()
+        if not name:
+            return
+        st = self._collect_camera_status_state()
+        if self._save_camera_status_profile_file(name, st):
+            self._refresh_camera_status_profile_list()
+            self._apply_camera_status_profile_name_to_ui(name)
+            self._set_active_target_camera_status_profile(name)
+            self.add_log(f"Saved camera status profile: {name}")
 
     def _read_profiles_meta(self) -> dict[str, object]:
         try:
@@ -4815,6 +6129,11 @@ class MainWindow(QMainWindow):
             "saved_at": _time.strftime("%Y-%m-%d %H:%M:%S"),
         }
 
+        try:
+            self._sync_active_stream_settings_from_viewer()
+        except Exception:
+            pass
+
         # Targets
         try:
             state["targets"] = self._jsonable(getattr(self, "_targets", {}) or {})
@@ -4825,6 +6144,11 @@ class MainWindow(QMainWindow):
         # Controller-related settings
         try:
             state["rate_limit_hz"] = int(self.rate_limit_spin.value())
+        except Exception:
+            pass
+        try:
+            state["pt_axis_mode_relative_enabled"] = bool(getattr(self, "_pt_axis_mode_relative_enabled", False))
+            state["pt_axis_mode_absolute_enabled"] = bool(getattr(self, "_pt_axis_mode_absolute_enabled", False))
         except Exception:
             pass
 
@@ -4857,6 +6181,22 @@ class MainWindow(QMainWindow):
         try:
             if hasattr(self, "hex_list_tab") and self.hex_list_tab is not None:
                 state["hex_list"] = self.hex_list_tab.get_rows_state()
+        except Exception:
+            pass
+
+        # Stream viewer UI state
+        try:
+            if hasattr(self, "stream_viewer") and self.stream_viewer is not None:
+                sv_state = {
+                    "path": str(self.stream_viewer.path_edit.text() or "").strip(),
+                    "endpoint": str(self.stream_viewer.endpoint_edit.text() or "").strip(),
+                }
+                state["stream_viewer"] = sv_state
+                state["active_stream_settings"] = {
+                    "protocol": str(getattr(self, "_active_stream_protocol", "RTMP") or "RTMP").strip(),
+                    "port": getattr(self, "_active_stream_port", None),
+                    "endpoint": sv_state["endpoint"],
+                }
         except Exception:
             pass
 
@@ -4904,6 +6244,12 @@ class MainWindow(QMainWindow):
                 self.rate_limit_spin.setValue(int(state.get("rate_limit_hz", self._send_rate_limit_hz)))
         except Exception:
             pass
+        try:
+            rel_enabled = bool(state.get("pt_axis_mode_relative_enabled", False))
+            abs_enabled = bool(state.get("pt_axis_mode_absolute_enabled", False))
+            self._set_pt_axis_modes(relative_enabled=rel_enabled, absolute_enabled=abs_enabled, announce=False)
+        except Exception:
+            pass
 
         # Hex list
         try:
@@ -4916,6 +6262,31 @@ class MainWindow(QMainWindow):
         try:
             if "virtual_mapping" in state and hasattr(self, "virtual_controller") and self.virtual_controller is not None:
                 self.virtual_controller.apply_mapping_state(state.get("virtual_mapping", {}) or {})
+        except Exception:
+            pass
+
+        # Stream viewer UI state
+        try:
+            sv = state.get("stream_viewer", None)
+            self._apply_saved_stream_viewer_state(sv if isinstance(sv, dict) else None)
+        except Exception:
+            pass
+
+        # Explicit active stream settings override, applied after target restore.
+        try:
+            ass = state.get("active_stream_settings", None)
+            if isinstance(ass, dict):
+                endpoint = str(ass.get("endpoint", "") or "").strip()
+                proto = str(ass.get("protocol", getattr(self, "_active_stream_protocol", "RTMP")) or "RTMP").strip().upper()
+                port = ass.get("port", getattr(self, "_active_stream_port", None))
+                if proto in ("RTMP", "RTSP"):
+                    self._active_stream_protocol = proto
+                self._active_stream_port = port
+                self._active_stream_endpoint = endpoint or None
+                self._apply_saved_stream_viewer_state({
+                    "path": str((state.get("stream_viewer", {}) or {}).get("path", "") or "").strip(),
+                    "endpoint": endpoint,
+                })
         except Exception:
             pass
 

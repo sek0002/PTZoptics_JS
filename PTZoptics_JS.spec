@@ -23,13 +23,13 @@ pygame_binaries = collect_dynamic_libs("pygame")
 
 a = Analysis(
     ['main1.py'],
-    pathex=['/Users/sekkevin/Library/CloudStorage/OneDrive-PeterMac/Documents/DCC/PTZoptics_JS'],
+    pathex=['/Users/sekkevin/Library/CloudStorage/OneDrive-PeterMac/Documents/DCC/PTZoptics_JS/PTZoptics_JS'],
     binaries=pygame_binaries,
-    datas=[('PTZOptics-VISCA-over-IP-Rev-1_2-8-20.pdf', '.'), ('assets', 'assets')] + pygame_datas,
+    datas=[('PTZOptics-VISCA-over-IP-Rev-1_2-8-20.pdf', '.'), ('visca_targets.json', '.'), ('assets', 'assets')] + pygame_datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=['/Users/sekkevin/Library/CloudStorage/OneDrive-PeterMac/Documents/DCC/PTZoptics_JS/runtime_hook_appdata.py'],
+    runtime_hooks=['/Users/sekkevin/Library/CloudStorage/OneDrive-PeterMac/Documents/DCC/PTZoptics_JS/PTZoptics_JS/runtime_hook_appdata.py'],
     excludes=[],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

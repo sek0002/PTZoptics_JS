@@ -1,0 +1,3 @@
+([('PTZoptics_JS',
+   '/Users/sekkevin/Library/CloudStorage/OneDrive-PeterMac/Documents/DCC/PTZoptics_JS/PTZoptics_JS/dist/PTZoptics_JS',
+   'EXECUTABLE')],)

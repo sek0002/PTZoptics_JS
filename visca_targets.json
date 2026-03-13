@@ -4,7 +4,10 @@
     "port": 1234
   },
   "2": {
-    "ip": "0.0.0.0",
-    "port": 52381
+    "ip": "192.168.1.240",
+    "port": 52381,
+    "stream_endpoint": "admin:1489357a",
+    "stream_protocol": "RTSP",
+    "stream_port": 554
   }
 }
